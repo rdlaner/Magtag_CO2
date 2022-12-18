@@ -54,7 +54,7 @@ class HomeAssistantDevice():
         # Add to collection of device sensors
         self.sensors.append(sensor)
 
-    def publish_sensors(self):
+    def publish_sensors(self) -> None:
         """Publish all cached sensor data"""
         topic = f"{self.topic}/state"
 

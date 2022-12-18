@@ -41,6 +41,7 @@ from supervisor import runtime, reload
 #       Can use this to fix current measurement_interval issue
 # TODO: Battery improvement - collect several samples and publish them at longer intervals
 # TODO: Add config for publishing logs to mqtt
+# TODO: Add ability to force recalibration vis MQTT
 
 # Constants
 DEEP_SLEEP_THROW_AWAY_SAMPLES = 2
@@ -115,6 +116,19 @@ def process(co2_device: HomeAssistantDevice,
 
         sensor_data = co2_device.read_sensors(cache=True)
 
+    # Connect network, if not already
+    # Connecting here allows deep sleep to read data prior to taking a higher
+    # power draw when connecting the network services.
+    if not network.is_connected():
+        network.connect()
+
+        # Send home assistant mqtt discovery
+        try:
+            co2_device.send_discovery()
+        except (ValueError, RuntimeError, MQTT.MMQTTException) as e:
+            print("SCD30 MQTT Discovery failure, rebooting\n", e)
+            reload()
+
     # Publish data to MQTT
     print("MQTT Publish Time: %0.2f" % time.monotonic())
     try:
@@ -152,10 +166,8 @@ def scd30_init(scd30: adafruit_scd30.SCD30) -> None:
     else:
         measurement_interval = SCD30_SAMPLE_RATE_FAST_SEC
 
-    # NOTE: Probably should remove this as using ambient pressure comp invalidates
-    #       altitude comp
-    if scd30.altitude != config["altitude_ft"]:
-        scd30.altitude = config["altitude_ft"]
+    if scd30.self_calibration_enabled:
+        scd30.self_calibration_enabled = False
     if scd30.temperature_offset != config["temp_offset_c"]:
         scd30.temperature_offset = config["temp_offset_c"]
     if scd30.measurement_interval != measurement_interval:
@@ -170,7 +182,6 @@ def scd30_init(scd30: adafruit_scd30.SCD30) -> None:
     scd30.ambient_pressure = struct.unpack("i", bytearray(pressure))[0]
 
     print("SCD30 Config:")
-    print(f"altitude: {scd30.altitude}")
     print(f"measurement_interval: {scd30.measurement_interval}")
     print(f"temperature_offset: {scd30.temperature_offset}")
     print(f"ambient_pressure: {scd30.ambient_pressure}")
@@ -218,8 +229,6 @@ def main() -> None:
     mqtt_client.on_disconnect = mqtt_disconnected
     mqtt_client.on_message = mqtt_message
     network = MagtagNetwork(magtag, mqtt_client)
-    network.connect()
-    print("Time: %0.2f" % time.monotonic())
 
     # Create home assistant sensors
     def co2_read():
@@ -242,13 +251,6 @@ def main() -> None:
     co2_device.add_sensor(sensor_scd30_hum)
     co2_device.add_sensor(sensor_scd30_temp)
     co2_device.add_sensor(sensor_battery)
-
-    # Send home assistant mqtt discovery
-    try:
-        co2_device.send_discovery()
-    except (ValueError, RuntimeError, MQTT.MMQTTException) as e:
-        print("SCD30 MQTT Discovery failure, rebooting\n", e)
-        reload()
 
     display_time = time.monotonic()
 

@@ -76,6 +76,9 @@ class MagtagNetwork():
         self.magtag.network.enabled = False
         print(f"Wifi is connected: {self.magtag.network.is_connected}")
 
+    def is_connected(self) -> bool:
+        return self.mqtt_client.is_connected()
+
     def loop(self, recover: bool = False) -> None:
         try:
             self.mqtt_client.loop()
