@@ -4,9 +4,9 @@ import alarm
 import digitalio
 import board
 import busio
+import json
 import socketpool
 import ssl
-import struct
 import time
 import wifi
 
@@ -16,6 +16,7 @@ from display import MagtagDisplay
 from homeassistant.device import HomeAssistantDevice
 from homeassistant.sensor import HomeAssistantSensor
 from homeassistant.device_class import DeviceClass
+from memory import NonVolatileMemory
 from network import MagtagNetwork
 from secrets import secrets
 from supervisor import runtime, reload
@@ -55,10 +56,15 @@ SENSOR_NAME_BATTERY = "Batt Voltage"
 SENSOR_NAME_SCD30_CO2 = "SCD30 CO2"
 SENSOR_NAME_SCD30_HUM = "SCD30 Humidity"
 SENSOR_NAME_SCD30_TEMP = "SCD30 Temperature"
+NUMBER_NAME_CO2_REF = "CO2 Ref"
+NON_VOL_NAME_PRESSURE = "pressure"
+NON_VOL_NAME_CAL = "forced cal"
+FORCE_CAL_DISABLED = -1
 
 # Globals
 display_time = time.monotonic()
 state_light_sleep = runtime.serial_connected if not config["force_deep_sleep"] else False
+non_volatile_memory = NonVolatileMemory()
 
 
 def c_to_f(temp_cels: float) -> float:
@@ -86,15 +92,24 @@ def mqtt_message(client: MQTT.MQTT, topic: str, message) -> None:
     print("New message on topic {0}: {1}".format(topic, message))
     if topic == config["pressure_topic"]:
         try:
-            pressure = bytearray(struct.pack("i", round(float(message))))
+            pressure = round(float(message))
         except ValueError:
-            print("Ambient pressure not updated")
+            print("Ambient pressure value invalid")
             return
 
-        for i, data in enumerate(pressure):
-            alarm.sleep_memory[i] = data
+        print(f"Updating nv pressure with {pressure}")
+        non_volatile_memory.set_element(NON_VOL_NAME_PRESSURE, pressure)
 
-        print(f"Updated ambient pressure to: {round(float(message))}")
+    elif topic == config["forced_cal_topic"]:
+        try:
+            obj = json.loads(message)
+            cal_val = obj[NUMBER_NAME_CO2_REF]
+        except ValueError:
+            print("Forced calibration value invalid")
+            return
+
+        print(f"Updating nv cal with {cal_val}")
+        non_volatile_memory.set_element(NON_VOL_NAME_CAL, cal_val)
 
 
 def process(co2_device: HomeAssistantDevice,
@@ -167,19 +182,22 @@ def scd30_init(scd30: adafruit_scd30.SCD30) -> None:
         measurement_interval = SCD30_SAMPLE_RATE_FAST_SEC
 
     if scd30.self_calibration_enabled:
+        print("Updating self cal mode to OFF")
         scd30.self_calibration_enabled = False
     if scd30.temperature_offset != config["temp_offset_c"]:
+        print(f"Updating temperature offset to {config['temp_offset_c']}")
         scd30.temperature_offset = config["temp_offset_c"]
     if scd30.measurement_interval != measurement_interval:
+        print(f"Updating measurement interval to {measurement_interval}")
         scd30.measurement_interval = measurement_interval
     if config["co2_cal"]:
+        print(f"Updating co2 cal ref to {config['co2_cal']}")
         scd30.forced_recalibration_reference = config["co2_cal"]
 
     # Start continous mode
-    pressure = []
-    for i in range(4):
-        pressure.append(alarm.sleep_memory[i])
-    scd30.ambient_pressure = struct.unpack("i", bytearray(pressure))[0]
+    pressure = non_volatile_memory.get_element(NON_VOL_NAME_PRESSURE)
+    print(f"Updating SCD30 pressure to {pressure} and enabling continuous mode")
+    scd30.ambient_pressure = pressure
 
     print("SCD30 Config:")
     print(f"measurement_interval: {scd30.measurement_interval}")
@@ -196,10 +214,14 @@ def main() -> None:
 
     # Initialization
     if not alarm.wake_alarm:
-        # Initialize persisent data - right now just ambient pressure
-        pressure = bytearray(struct.pack("i", config["ambient_pressure"]))
-        for i, data in enumerate(pressure):
-            alarm.sleep_memory[i] = data
+        # Initialize persisent data
+        non_volatile_memory.reset()
+        non_volatile_memory.add_element(
+            NON_VOL_NAME_PRESSURE, "I", config["ambient_pressure"])
+        non_volatile_memory.add_element(
+            NON_VOL_NAME_CAL, "i", FORCE_CAL_DISABLED)
+
+    non_volatile_memory.print_elements()
 
     red_led = digitalio.DigitalInOut(board.D13)
     red_led.switch_to_output(value=False)
