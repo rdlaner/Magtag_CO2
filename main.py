@@ -37,12 +37,17 @@ from supervisor import runtime, reload
 # compensation algorithms. So, we don't want to call reset() during the init
 # process when in deep sleep mode otherwise the SCD30 would be able to fully
 # apply its compensation algorithms.
+# NOTE: For some reason, it seems that when I updated the measurement interval
+# immediately after reading the sensors in Process(), the new interval gets
+# written to the co2 cal ref instead. If I move the interval update back to
+# the main loop after Process() is called, I don't see this issue. Really weird.
+# There possibly is some connection between updating measurement interval and
+# manual calibration reference??
 
 # TODO: get access to scd data-ready pin and use it to trigger "process" -
 #       Can use this to fix current measurement_interval issue
 # TODO: Battery improvement - collect several samples and publish them at longer intervals
 # TODO: Add config for publishing logs to mqtt
-# TODO: Add ability to force recalibration vis MQTT
 
 # Constants
 DEEP_SLEEP_THROW_AWAY_SAMPLES = 2
@@ -76,6 +81,7 @@ def mqtt_connected(client: MQTT.MQTT, userdata, flags, rc) -> None:
     # successfully to the broker.
     print("Connected to MQTT broker!")
     client.subscribe(config["pressure_topic"])
+    client.subscribe(config["forced_cal_topic"])
 
 
 def mqtt_disconnected(client: MQTT.MQTT, userdata, rc) -> None:
@@ -97,24 +103,26 @@ def mqtt_message(client: MQTT.MQTT, topic: str, message) -> None:
             print("Ambient pressure value invalid")
             return
 
-        print(f"Updating nv pressure with {pressure}")
+        print(f"Updating nv pressure to {pressure}")
         non_volatile_memory.set_element(NON_VOL_NAME_PRESSURE, pressure)
 
     elif topic == config["forced_cal_topic"]:
         try:
-            obj = json.loads(message)
-            cal_val = obj[NUMBER_NAME_CO2_REF]
+            # obj = json.loads(message)
+            # cal_val = obj[NUMBER_NAME_CO2_REF]
+            cal_val = int(message)
         except ValueError:
             print("Forced calibration value invalid")
             return
 
-        print(f"Updating nv cal with {cal_val}")
+        print(f"Updating nv cal to {cal_val}")
         non_volatile_memory.set_element(NON_VOL_NAME_CAL, cal_val)
 
 
 def process(co2_device: HomeAssistantDevice,
             display: MagtagDisplay,
-            network: MagtagNetwork) -> None:
+            network: MagtagNetwork,
+            scd30: adafruit_scd30.SCD30) -> None:
     global display_time
     print("Processing...")
     print("Time: %0.2f" % time.monotonic())
@@ -126,10 +134,11 @@ def process(co2_device: HomeAssistantDevice,
         # Read multiple samples and only use last one
         for i in range(DEEP_SLEEP_THROW_AWAY_SAMPLES):
             sensor_data = co2_device.read_sensors(cache=False)
-            print("Time: %0.2f" % time.monotonic())
             print(sensor_data)
 
         sensor_data = co2_device.read_sensors(cache=True)
+        print(sensor_data)
+        print("Time: %0.2f" % time.monotonic())
 
     # Connect network, if not already
     # Connecting here allows deep sleep to read data prior to taking a higher
@@ -145,8 +154,9 @@ def process(co2_device: HomeAssistantDevice,
             reload()
 
     # Publish data to MQTT
-    print("MQTT Publish Time: %0.2f" % time.monotonic())
+    print("Time: %0.2f" % time.monotonic())
     try:
+        print("Publishing MQTT data...")
         co2_device.publish_sensors()
     except (OSError, ValueError, RuntimeError, MQTT.MMQTTException) as e:
         print("MQTT Publish failure\n", e)
@@ -156,12 +166,20 @@ def process(co2_device: HomeAssistantDevice,
             return
 
     # Service MQTT
-    print("MQTT Time Loop: %0.2f" % time.monotonic())
+    print("Time: %0.2f" % time.monotonic())
     network.loop(recover=state_light_sleep)
+
+    # Perform forced recal if received new cal value
+    expected_cal_val = non_volatile_memory.get_element(NON_VOL_NAME_CAL)
+    current_cal_val = scd30.forced_recalibration_reference
+    if expected_cal_val != FORCE_CAL_DISABLED and expected_cal_val != current_cal_val:
+        print(f"Updating SCD30 cal reference from {current_cal_val} to {expected_cal_val}")
+        scd30.forced_recalibration_reference = expected_cal_val
 
     # Update display
     if ((time.monotonic() - display_time) >= config["display_refresh_rate_sec"]) or not state_light_sleep:
-        print("Display Time: %0.2f" % time.monotonic())
+        print("Time: %0.2f" % time.monotonic())
+        print("Updating display...")
         display.update_co2(sensor_data[SENSOR_NAME_SCD30_CO2])
         display.update_temp(c_to_f(sensor_data[SENSOR_NAME_SCD30_TEMP]))
         display.update_hum(sensor_data[SENSOR_NAME_SCD30_HUM])
@@ -170,8 +188,7 @@ def process(co2_device: HomeAssistantDevice,
         display.refresh()
         display_time = time.monotonic()
 
-    print("Done Processing Time: %0.2f" % time.monotonic())
-    print(sensor_data)
+    print("Time: %0.2f" % time.monotonic())
     print("")
 
 
@@ -190,9 +207,6 @@ def scd30_init(scd30: adafruit_scd30.SCD30) -> None:
     if scd30.measurement_interval != measurement_interval:
         print(f"Updating measurement interval to {measurement_interval}")
         scd30.measurement_interval = measurement_interval
-    if config["co2_cal"]:
-        print(f"Updating co2 cal ref to {config['co2_cal']}")
-        scd30.forced_recalibration_reference = config["co2_cal"]
 
     # Start continous mode
     pressure = non_volatile_memory.get_element(NON_VOL_NAME_PRESSURE)
@@ -200,10 +214,11 @@ def scd30_init(scd30: adafruit_scd30.SCD30) -> None:
     scd30.ambient_pressure = pressure
 
     print("SCD30 Config:")
+    print(f"self cal enabled: {scd30.self_calibration_enabled}")
     print(f"measurement_interval: {scd30.measurement_interval}")
     print(f"temperature_offset: {scd30.temperature_offset}")
     print(f"ambient_pressure: {scd30.ambient_pressure}")
-    print(f"co2_cal: {scd30.forced_recalibration_reference}")
+    print(f"CO2 cal ref: {scd30.forced_recalibration_reference}")
     print(f"display_refresh_rate_sec: {config['display_refresh_rate_sec']}")
     print("")
 
@@ -252,12 +267,13 @@ def main() -> None:
     mqtt_client.on_message = mqtt_message
     network = MagtagNetwork(magtag, mqtt_client)
 
-    # Create home assistant sensors
+    # Custom fxn for reading co2 values since we need one that will wait on data available
     def co2_read():
         while not scd30.data_available:
             time.sleep(0.5)
         return scd30.CO2
 
+    # Create home assistant sensors
     sensor_battery = HomeAssistantSensor(
         SENSOR_NAME_BATTERY, lambda: magtag.peripherals.battery, 2, DeviceClass.BATTERY, "V")
     sensor_scd30_co2 = HomeAssistantSensor(
@@ -278,7 +294,7 @@ def main() -> None:
 
     # Main Loop
     while True:
-        process(co2_device, display, network)
+        process(co2_device, display, network, scd30)
 
         if state_light_sleep:
             if state_light_sleep != runtime.serial_connected:
@@ -287,6 +303,7 @@ def main() -> None:
                 magtag.enter_light_sleep(config["light_sleep_sec"])
         else:
             # Change interval to large value - effectively turn off sampling while sleeping
+            print(f"Updating measurement interval to {SCD30_SAMPLE_RATE_SLOW_SEC}")
             scd30.measurement_interval = SCD30_SAMPLE_RATE_SLOW_SEC
 
             network.disconnect()
