@@ -14,9 +14,11 @@ from adafruit_magtag.magtag import MagTag
 from config import config
 from display import MagtagDisplay
 from homeassistant.device import HomeAssistantDevice
+from homeassistant.number import HomeAssistantNumber
 from homeassistant.sensor import HomeAssistantSensor
 from homeassistant.device_class import DeviceClass
 from memory import NonVolatileMemory
+from micropython import const
 from network import MagtagNetwork
 from secrets import secrets
 from supervisor import runtime, reload
@@ -37,6 +39,11 @@ from supervisor import runtime, reload
 # compensation algorithms. So, we don't want to call reset() during the init
 # process when in deep sleep mode otherwise the SCD30 would be able to fully
 # apply its compensation algorithms.
+# NOTE: Also, stopping continuous mode, changing measurement interval, and then
+# resuming continuous mode as a work-around to get a new measurement interval
+# operating immediately, unfortunately has the same impact as calling reset()
+# in that the ppm calibration algorithm is not allowed to fully run since I
+# would do this on every sleep cycle.
 # NOTE: For some reason, it seems that when I updated the measurement interval
 # immediately after reading the sensors in Process(), the new interval gets
 # written to the co2 cal ref instead. If I move the interval update back to
@@ -47,24 +54,31 @@ from supervisor import runtime, reload
 # TODO: get access to scd data-ready pin and use it to trigger "process" -
 #       Can use this to fix current measurement_interval issue
 # TODO: Battery improvement - collect several samples and publish them at longer intervals
+# TODO: Improve display
 # TODO: Add config for publishing logs to mqtt
+# TODO: Fix circuitpython scd30 init which forces a 2 second measurement interval
+# TODO: Add HA Number entity for publishing SCD30 config
+# TODO: Add base class for HA types (eg for sensor, number, etc.)
 
 # Constants
-DEEP_SLEEP_THROW_AWAY_SAMPLES = 2
-MQTT_CONNECT_ATTEMPTS = 10
-MQTT_RX_TIMEOUT_SEC = 10
-MQTT_KEEP_ALIVE_MARGIN_SEC = 20
-SCD30_SAMPLE_RATE_FAST_SEC = 2
-SCD30_SAMPLE_RATE_SLOW_SEC = config["deep_sleep_sec"] - 5
+MQTT_CONNECT_ATTEMPTS = const(10)
+MQTT_RX_TIMEOUT_SEC = const(10)
+MQTT_KEEP_ALIVE_MARGIN_SEC = const(20)
+FORCE_CAL_DISABLED = const(-1)
+DEEP_SLEEP_THROW_AWAY_SAMPLES = const(1)
+DEEP_SLEEP_MARGIN_SEC = const(15)
+SCD30_SAMPLE_RATE_FAST_SEC = const(2)
 DEVICE_NAME = "Magtag_CO2"
 SENSOR_NAME_BATTERY = "Batt Voltage"
 SENSOR_NAME_SCD30_CO2 = "SCD30 CO2"
 SENSOR_NAME_SCD30_HUM = "SCD30 Humidity"
 SENSOR_NAME_SCD30_TEMP = "SCD30 Temperature"
+NUMBER_NAME_TEMP_OFFSET = "Temp Offset"
+NUMBER_NAME_PRESSURE = "Pressure"
 NUMBER_NAME_CO2_REF = "CO2 Ref"
 NON_VOL_NAME_PRESSURE = "pressure"
 NON_VOL_NAME_CAL = "forced cal"
-FORCE_CAL_DISABLED = -1
+SCD30_SAMPLE_RATE_SLOW_SEC = config["deep_sleep_sec"] - 10
 
 # Globals
 display_time = time.monotonic()
@@ -76,7 +90,7 @@ def c_to_f(temp_cels: float) -> float:
     return (temp_cels * 1.8) + 32.0
 
 
-def mqtt_connected(client: MQTT.MQTT, userdata, flags, rc) -> None:
+def mqtt_connected(client: MQTT.MQTT, user_data, flags, rc) -> None:
     # This function will be called when the client is connected
     # successfully to the broker.
     print("Connected to MQTT broker!")
@@ -84,13 +98,13 @@ def mqtt_connected(client: MQTT.MQTT, userdata, flags, rc) -> None:
     client.subscribe(config["forced_cal_topic"])
 
 
-def mqtt_disconnected(client: MQTT.MQTT, userdata, rc) -> None:
+def mqtt_disconnected(client: MQTT.MQTT, user_data, rc) -> None:
     # This method is called when the client is disconnected
     print("Disconnected from MQTT Broker!")
 
 
 def mqtt_message(client: MQTT.MQTT, topic: str, message) -> None:
-    """Method callled when a client's subscribed feed has a new
+    """Method called when a client's subscribed feed has a new
     value.
     :param str topic: The topic of the feed with a new value.
     :param str message: The new value
@@ -108,9 +122,8 @@ def mqtt_message(client: MQTT.MQTT, topic: str, message) -> None:
 
     elif topic == config["forced_cal_topic"]:
         try:
-            # obj = json.loads(message)
-            # cal_val = obj[NUMBER_NAME_CO2_REF]
-            cal_val = int(message)
+            obj = json.loads(message)
+            cal_val = obj[NUMBER_NAME_CO2_REF]
         except ValueError:
             print("Forced calibration value invalid")
             return
@@ -157,6 +170,7 @@ def process(co2_device: HomeAssistantDevice,
     print("Time: %0.2f" % time.monotonic())
     try:
         print("Publishing MQTT data...")
+        co2_device.publish_numbers()
         co2_device.publish_sensors()
     except (OSError, ValueError, RuntimeError, MQTT.MMQTTException) as e:
         print("MQTT Publish failure\n", e)
@@ -208,7 +222,7 @@ def scd30_init(scd30: adafruit_scd30.SCD30) -> None:
         print(f"Updating measurement interval to {measurement_interval}")
         scd30.measurement_interval = measurement_interval
 
-    # Start continous mode
+    # Start continuous mode
     pressure = non_volatile_memory.get_element(NON_VOL_NAME_PRESSURE)
     print(f"Updating SCD30 pressure to {pressure} and enabling continuous mode")
     scd30.ambient_pressure = pressure
@@ -225,11 +239,12 @@ def scd30_init(scd30: adafruit_scd30.SCD30) -> None:
 
 def main() -> None:
     global display_time
+    print("Initializing...")
     print("Time: %0.2f" % time.monotonic())
 
     # Initialization
     if not alarm.wake_alarm:
-        # Initialize persisent data
+        # Initialize persistent data
         non_volatile_memory.reset()
         non_volatile_memory.add_element(
             NON_VOL_NAME_PRESSURE, "I", config["ambient_pressure"])
@@ -283,12 +298,42 @@ def main() -> None:
     sensor_scd30_temp = HomeAssistantSensor(
         SENSOR_NAME_SCD30_TEMP, lambda: scd30.temperature, 1, DeviceClass.TEMPERATURE, "°C")
 
+    # Create home assistant numbers
+    number_temp_offset = HomeAssistantNumber(
+        NUMBER_NAME_TEMP_OFFSET,
+        lambda: scd30.temperature_offset,
+        unit="°C",
+        min_value=0,
+        mode="box")
+    number_pressure = HomeAssistantNumber(
+        NUMBER_NAME_PRESSURE,
+        lambda: scd30.ambient_pressure,
+        device_class=DeviceClass.PRESSURE,
+        unit="mbar",
+        min_value=100,
+        max_value=1100,
+        mode="box")
+    number_co2_ref = HomeAssistantNumber(
+        NUMBER_NAME_CO2_REF,
+        lambda: scd30.forced_recalibration_reference,
+        device_class=DeviceClass.CARBON_DIOXIDE,
+        unit="ppm",
+        min_value=400,
+        max_value=5000,
+        mode="box")
+
     # Create home assistant device
     co2_device = HomeAssistantDevice(DEVICE_NAME, "Magtag", mqtt_client)
     co2_device.add_sensor(sensor_scd30_co2)  # Read first since it has wait for data loop
     co2_device.add_sensor(sensor_scd30_hum)
     co2_device.add_sensor(sensor_scd30_temp)
     co2_device.add_sensor(sensor_battery)
+    co2_device.add_number(number_temp_offset)
+    co2_device.add_number(number_pressure)
+    co2_device.add_number(number_co2_ref)
+
+    # Set forced calibration topic, which will be subscribed to by mqtt_connected
+    config["forced_cal_topic"] = f"{co2_device.number_topic}/cmd"
 
     display_time = time.monotonic()
 
