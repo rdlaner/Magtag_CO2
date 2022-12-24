@@ -129,79 +129,6 @@ def mqtt_message(client: MQTT.MQTT, topic: str, message) -> None:
         non_volatile_memory.set_element(NON_VOL_NAME_CAL, cal_val)
 
 
-def process(co2_device: HomeAssistantDevice,
-            display: MagtagDisplay,
-            network: MagtagNetwork,
-            scd30: adafruit_scd30.SCD30) -> None:
-    global display_time
-    print("Processing...")
-    print("Time: %0.2f" % time.monotonic())
-
-    print("Reading sensors...")
-    sensor_data = co2_device.read_sensors(cache=True)
-    print(sensor_data)
-    print("Time: %0.2f" % time.monotonic())
-
-    # Connect network, if not already
-    # Connecting here allows deep sleep to read data prior to taking a higher
-    # power draw when connecting the network services.
-    if not network.is_connected():
-        network.connect()
-
-        # Send home assistant mqtt discovery
-        try:
-            co2_device.send_discovery()
-        except (ValueError, RuntimeError, MQTT.MMQTTException) as e:
-            print("SCD30 MQTT Discovery failure, rebooting\n", e)
-            reload()
-
-    # Publish data to MQTT
-    print("Time: %0.2f" % time.monotonic())
-    try:
-        print("Publishing MQTT data...")
-        co2_device.publish_numbers()
-        co2_device.publish_sensors()
-    except (OSError, ValueError, RuntimeError, MQTT.MMQTTException) as e:
-        print("MQTT Publish failure\n", e)
-        if state_light_sleep:
-            network.recover()
-        else:
-            return
-
-    # Service MQTT
-    print("Time: %0.2f" % time.monotonic())
-    network.loop(recover=state_light_sleep)
-
-    # Perform forced recal if received new cal value
-    expected_cal_val = non_volatile_memory.get_element(NON_VOL_NAME_CAL)
-    current_cal_val = scd30.forced_recalibration_reference
-    if expected_cal_val != FORCE_CAL_DISABLED and expected_cal_val != current_cal_val:
-        print(f"Updating SCD30 cal reference from {current_cal_val} to {expected_cal_val}")
-        scd30.forced_recalibration_reference = expected_cal_val
-
-    # Update pressure if received a new value
-    expected_pressure = non_volatile_memory.get_element(NON_VOL_NAME_PRESSURE)
-    current_pressure = scd30.ambient_pressure
-    if expected_pressure != current_pressure:
-        print(f"Updating SCD30 pressure from {current_pressure} to {expected_pressure}")
-        scd30.ambient_pressure = expected_pressure
-
-    # Update display
-    if ((time.monotonic() - display_time) >= config["display_refresh_rate_sec"]) or not state_light_sleep:
-        print("Time: %0.2f" % time.monotonic())
-        print("Updating display...")
-        display.update_co2(sensor_data[SENSOR_NAME_SCD30_CO2])
-        display.update_temp(c_to_f(sensor_data[SENSOR_NAME_SCD30_TEMP]))
-        display.update_hum(sensor_data[SENSOR_NAME_SCD30_HUM])
-        display.update_batt(sensor_data[SENSOR_NAME_BATTERY])
-        display.update_usb("T" if runtime.serial_connected else "F")
-        display.refresh()
-        display_time = time.monotonic()
-
-    print("Time: %0.2f" % time.monotonic())
-    print("")
-
-
 def scd30_init(scd30: adafruit_scd30.SCD30) -> None:
     if state_light_sleep:
         measurement_interval = config["light_sleep_sec"]
@@ -316,7 +243,7 @@ def main() -> None:
 
     # Create home assistant device
     co2_device = HomeAssistantDevice(DEVICE_NAME, "Magtag", mqtt_client)
-    co2_device.add_sensor(sensor_scd30_co2)  # Read first since it has wait for data loop
+    co2_device.add_sensor(sensor_scd30_co2)
     co2_device.add_sensor(sensor_scd30_hum)
     co2_device.add_sensor(sensor_scd30_temp)
     co2_device.add_sensor(sensor_battery)
@@ -333,7 +260,76 @@ def main() -> None:
 
     # Main Loop
     while True:
-        process(co2_device, display, network, scd30)
+        print("Processing...")
+        print("Time: %0.2f" % time.monotonic())
+
+        print("Reading sensors...")
+        sensor_data = co2_device.read_sensors(cache=True)
+        print(sensor_data)
+        print("Time: %0.2f" % time.monotonic())
+
+        # Connect network, if not already
+        # Connecting here allows deep sleep to read data prior to taking a higher
+        # power draw when connecting the network services.
+        if not network.is_connected():
+            network.connect()
+
+            # Send home assistant mqtt discovery
+            try:
+                co2_device.send_discovery()
+            except (ValueError, RuntimeError, MQTT.MMQTTException) as e:
+                print("CO2 device MQTT discovery failure, rebooting\n", e)
+                reload()
+
+        # Publish data to MQTT
+        print("Time: %0.2f" % time.monotonic())
+        try:
+            print("Publishing MQTT data...")
+            co2_device.publish_numbers()
+            co2_device.publish_sensors()
+        except (OSError, ValueError, RuntimeError, MQTT.MMQTTException) as e:
+            print("MQTT Publish failure\n", e)
+            if state_light_sleep:
+                network.recover()
+            else:
+                return
+
+        # Service MQTT
+        print("Time: %0.2f" % time.monotonic())
+        network.loop(recover=state_light_sleep)
+
+        # Turn off network if in deep sleep mode
+        if not state_light_sleep:
+            network.disconnect()
+
+        # Perform forced recal if received new cal value
+        expected_cal_val = non_volatile_memory.get_element(NON_VOL_NAME_CAL)
+        current_cal_val = scd30.forced_recalibration_reference
+        if expected_cal_val != FORCE_CAL_DISABLED and expected_cal_val != current_cal_val:
+            print(f"Updating SCD30 cal reference from {current_cal_val} to {expected_cal_val}")
+            scd30.forced_recalibration_reference = expected_cal_val
+
+        # Update pressure if received a new value
+        expected_pressure = non_volatile_memory.get_element(NON_VOL_NAME_PRESSURE)
+        current_pressure = scd30.ambient_pressure
+        if expected_pressure != current_pressure:
+            print(f"Updating SCD30 pressure from {current_pressure} to {expected_pressure}")
+            scd30.ambient_pressure = expected_pressure
+
+        # Update display
+        if ((time.monotonic() - display_time) >= config["display_refresh_rate_sec"]) or not state_light_sleep:
+            print("Time: %0.2f" % time.monotonic())
+            print("Updating display...")
+            display.update_co2(sensor_data[SENSOR_NAME_SCD30_CO2])
+            display.update_temp(c_to_f(sensor_data[SENSOR_NAME_SCD30_TEMP]))
+            display.update_hum(sensor_data[SENSOR_NAME_SCD30_HUM])
+            display.update_batt(sensor_data[SENSOR_NAME_BATTERY])
+            display.update_usb("T" if runtime.serial_connected else "F")
+            display.refresh()
+            display_time = time.monotonic()
+
+        print("Time: %0.2f" % time.monotonic())
+        print("")
 
         print("Sleeping...")
         if state_light_sleep:
@@ -342,8 +338,6 @@ def main() -> None:
             else:
                 magtag.enter_light_sleep(data_read_alarm)
         else:
-            network.disconnect()
-
             if state_light_sleep != runtime.serial_connected and config["force_deep_sleep"] is False:
                 reload()  # State transition, reboot into light sleep state
             else:
