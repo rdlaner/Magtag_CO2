@@ -55,35 +55,80 @@ class MagtagDisplay:
         self.display.show(self.main_group)
 
     def _build_text_batt(self, batt_val):
-        return f"{self.BATT_PREFIX} {batt_val:.2f} {self.BATT_SUFFIX}"
+        try:
+            text = f"{self.BATT_PREFIX} {batt_val:.2f} {self.BATT_SUFFIX}"
+        except ValueError as e:
+            text = None
+            print(f"Invalid display value: {batt_val}")
+            print(e)
+
+        return text
 
     def _build_text_co2(self, co2_val):
-        return f"{self.CO2_PREFIX} {co2_val:.0f} {self.CO2_SUFFIX}"
+        try:
+            text = f"{self.CO2_PREFIX} {co2_val:.0f} {self.CO2_SUFFIX}"
+        except ValueError as e:
+            text = None
+            print(f"Invalid display value: {co2_val}")
+            print(e)
+
+        return text
 
     def _build_text_hum(self, hum_val):
-        return f"{self.HUM_PREFIX} {hum_val:.0f} {self.HUM_SUFFIX}"
+        try:
+            text = f"{self.HUM_PREFIX} {hum_val:.0f} {self.HUM_SUFFIX}"
+        except ValueError as e:
+            text = None
+            print(f"Invalid display value: {hum_val}")
+            print(e)
+
+        return text
 
     def _build_text_temp(self, temp_val):
-        return f"{self.TEMP_PREFIX} {temp_val:.1f} {self.TEMP_SUFFIX}"
+        try:
+            text = f"{self.TEMP_PREFIX} {temp_val:.1f} {self.TEMP_SUFFIX}"
+        except ValueError as e:
+            text = None
+            print(f"Invalid display value: {temp_val}")
+            print(e)
+
+        return text
 
     def _build_text_usb(self, usb_val):
-        return f"USB: {usb_val}"
+        try:
+            text = f"USB: {usb_val}"
+        except ValueError as e:
+            text = None
+            print(f"Invalid display value: {usb_val}")
+            print(e)
+
+        return text
 
     def refresh(self):
         time.sleep(self.display.time_to_refresh + 1)
         self.display.refresh()
 
     def update_batt(self, val):
-        self.batt_label.text = self._build_text_batt(val)
+        text = self._build_text_batt(val)
+        if text:
+            self.batt_label.text = text
 
     def update_co2(self, val):
-        self.co2_label.text = self._build_text_co2(val)
+        text = self._build_text_co2(val)
+        if text:
+            self.co2_label.text = text
 
     def update_hum(self, val):
-        self.hum_label.text = self._build_text_hum(val)
+        text = self._build_text_hum(val)
+        if text:
+            self.hum_label.text = text
 
     def update_temp(self, val):
-        self.temp_label.text = self._build_text_temp(val)
+        text = self._build_text_temp(val)
+        if text:
+            self.temp_label.text = text
 
     def update_usb(self, val):
-        self.usb_label.text = self._build_text_usb(val)
+        text = self._build_text_usb(val)
+        if text:
+            self.usb_label.text = text

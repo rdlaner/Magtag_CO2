@@ -51,13 +51,10 @@ from supervisor import runtime, reload
 # There possibly is some connection between updating measurement interval and
 # manual calibration reference??
 
-# TODO: get access to scd data-ready pin and use it to trigger "process" -
-#       Can use this to fix current measurement_interval issue
 # TODO: Battery improvement - collect several samples and publish them at longer intervals
 # TODO: Improve display
 # TODO: Add config for publishing logs to mqtt
 # TODO: Fix circuitpython scd30 init which forces a 2 second measurement interval
-# TODO: Add HA Number entity for publishing SCD30 config
 # TODO: Add base class for HA types (eg for sensor, number, etc.)
 
 # Constants
@@ -65,8 +62,6 @@ MQTT_CONNECT_ATTEMPTS = const(10)
 MQTT_RX_TIMEOUT_SEC = const(10)
 MQTT_KEEP_ALIVE_MARGIN_SEC = const(20)
 FORCE_CAL_DISABLED = const(-1)
-DEEP_SLEEP_THROW_AWAY_SAMPLES = const(1)
-DEEP_SLEEP_MARGIN_SEC = const(15)
 SCD30_SAMPLE_RATE_FAST_SEC = const(2)
 DEVICE_NAME = "Magtag_CO2"
 SENSOR_NAME_BATTERY = "Batt Voltage"
@@ -78,7 +73,6 @@ NUMBER_NAME_PRESSURE = "Pressure"
 NUMBER_NAME_CO2_REF = "CO2 Ref"
 NON_VOL_NAME_PRESSURE = "pressure"
 NON_VOL_NAME_CAL = "forced cal"
-SCD30_SAMPLE_RATE_SLOW_SEC = config["deep_sleep_sec"] - 10
 
 # Globals
 display_time = time.monotonic()
@@ -87,14 +81,15 @@ non_volatile_memory = NonVolatileMemory()
 
 
 def c_to_f(temp_cels: float) -> float:
-    return (temp_cels * 1.8) + 32.0
+    return (temp_cels * 1.8) + 32.0 if temp_cels else None
 
 
 def mqtt_connected(client: MQTT.MQTT, user_data, flags, rc) -> None:
     # This function will be called when the client is connected
     # successfully to the broker.
-    print("Connected to MQTT broker!")
+    print(f"Subscribing to {config['pressure_topic']}...")
     client.subscribe(config["pressure_topic"])
+    print(f"Subscribing to {config['forced_cal_topic']}...")
     client.subscribe(config["forced_cal_topic"])
 
 
@@ -113,8 +108,9 @@ def mqtt_message(client: MQTT.MQTT, topic: str, message) -> None:
     if topic == config["pressure_topic"]:
         try:
             pressure = round(float(message))
-        except ValueError:
+        except ValueError as e:
             print("Ambient pressure value invalid")
+            print(e)
             return
 
         print(f"Updating nv pressure to {pressure}")
@@ -124,8 +120,9 @@ def mqtt_message(client: MQTT.MQTT, topic: str, message) -> None:
         try:
             obj = json.loads(message)
             cal_val = obj[NUMBER_NAME_CO2_REF]
-        except ValueError:
+        except ValueError as e:
             print("Forced calibration value invalid")
+            print(e)
             return
 
         print(f"Updating nv cal to {cal_val}")
@@ -140,18 +137,10 @@ def process(co2_device: HomeAssistantDevice,
     print("Processing...")
     print("Time: %0.2f" % time.monotonic())
 
-    # Read sensors
-    if state_light_sleep:
-        sensor_data = co2_device.read_sensors(cache=True)
-    else:
-        # Read multiple samples and only use last one
-        for i in range(DEEP_SLEEP_THROW_AWAY_SAMPLES):
-            sensor_data = co2_device.read_sensors(cache=False)
-            print(sensor_data)
-
-        sensor_data = co2_device.read_sensors(cache=True)
-        print(sensor_data)
-        print("Time: %0.2f" % time.monotonic())
+    print("Reading sensors...")
+    sensor_data = co2_device.read_sensors(cache=True)
+    print(sensor_data)
+    print("Time: %0.2f" % time.monotonic())
 
     # Connect network, if not already
     # Connecting here allows deep sleep to read data prior to taking a higher
@@ -190,6 +179,13 @@ def process(co2_device: HomeAssistantDevice,
         print(f"Updating SCD30 cal reference from {current_cal_val} to {expected_cal_val}")
         scd30.forced_recalibration_reference = expected_cal_val
 
+    # Update pressure if received a new value
+    expected_pressure = non_volatile_memory.get_element(NON_VOL_NAME_PRESSURE)
+    current_pressure = scd30.ambient_pressure
+    if expected_pressure != current_pressure:
+        print(f"Updating SCD30 pressure from {current_pressure} to {expected_pressure}")
+        scd30.ambient_pressure = expected_pressure
+
     # Update display
     if ((time.monotonic() - display_time) >= config["display_refresh_rate_sec"]) or not state_light_sleep:
         print("Time: %0.2f" % time.monotonic())
@@ -210,7 +206,7 @@ def scd30_init(scd30: adafruit_scd30.SCD30) -> None:
     if state_light_sleep:
         measurement_interval = config["light_sleep_sec"]
     else:
-        measurement_interval = SCD30_SAMPLE_RATE_FAST_SEC
+        measurement_interval = config["deep_sleep_sec"]
 
     if scd30.self_calibration_enabled:
         print("Updating self cal mode to OFF")
@@ -234,12 +230,11 @@ def scd30_init(scd30: adafruit_scd30.SCD30) -> None:
     print(f"ambient_pressure: {scd30.ambient_pressure}")
     print(f"CO2 cal ref: {scd30.forced_recalibration_reference}")
     print(f"display_refresh_rate_sec: {config['display_refresh_rate_sec']}")
-    print("")
 
 
 def main() -> None:
     global display_time
-    print("Initializing...")
+    print("\nInitializing...")
     print("Time: %0.2f" % time.monotonic())
 
     # Initialization
@@ -250,14 +245,17 @@ def main() -> None:
             NON_VOL_NAME_PRESSURE, "I", config["ambient_pressure"])
         non_volatile_memory.add_element(
             NON_VOL_NAME_CAL, "i", FORCE_CAL_DISABLED)
-
     non_volatile_memory.print_elements()
 
     red_led = digitalio.DigitalInOut(board.D13)
     red_led.switch_to_output(value=False)
 
     magtag = MagTag()
+    magtag.peripherals.neopixel_disable = True
+    magtag.peripherals.speaker_disable = True
+
     display = MagtagDisplay()
+    data_read_alarm = alarm.pin.PinAlarm(pin=board.D10, value=True, pull=False)
 
     i2c = busio.I2C(board.SCL, board.SDA, frequency=50000)
     scd30 = adafruit_scd30.SCD30(i2c)
@@ -282,17 +280,11 @@ def main() -> None:
     mqtt_client.on_message = mqtt_message
     network = MagtagNetwork(magtag, mqtt_client)
 
-    # Custom fxn for reading co2 values since we need one that will wait on data available
-    def co2_read():
-        while not scd30.data_available:
-            time.sleep(0.5)
-        return scd30.CO2
-
     # Create home assistant sensors
     sensor_battery = HomeAssistantSensor(
         SENSOR_NAME_BATTERY, lambda: magtag.peripherals.battery, 2, DeviceClass.BATTERY, "V")
     sensor_scd30_co2 = HomeAssistantSensor(
-        SENSOR_NAME_SCD30_CO2, co2_read, 0, DeviceClass.CARBON_DIOXIDE, "ppm")
+        SENSOR_NAME_SCD30_CO2, lambda: scd30.CO2, 0, DeviceClass.CARBON_DIOXIDE, "ppm")
     sensor_scd30_hum = HomeAssistantSensor(
         SENSOR_NAME_SCD30_HUM, lambda: scd30.relative_humidity, 0, DeviceClass.HUMIDITY, "%")
     sensor_scd30_temp = HomeAssistantSensor(
@@ -336,27 +328,26 @@ def main() -> None:
     config["forced_cal_topic"] = f"{co2_device.number_topic}/cmd"
 
     display_time = time.monotonic()
+    print("Time: %0.2f" % time.monotonic())
+    print("")
 
     # Main Loop
     while True:
         process(co2_device, display, network, scd30)
 
+        print("Sleeping...")
         if state_light_sleep:
             if state_light_sleep != runtime.serial_connected:
                 reload()  # State transition, reboot into deep sleep state
             else:
-                magtag.enter_light_sleep(config["light_sleep_sec"])
+                magtag.enter_light_sleep(data_read_alarm)
         else:
-            # Change interval to large value - effectively turn off sampling while sleeping
-            print(f"Updating measurement interval to {SCD30_SAMPLE_RATE_SLOW_SEC}")
-            scd30.measurement_interval = SCD30_SAMPLE_RATE_SLOW_SEC
-
             network.disconnect()
 
             if state_light_sleep != runtime.serial_connected and config["force_deep_sleep"] is False:
                 reload()  # State transition, reboot into light sleep state
             else:
-                magtag.exit_and_deep_sleep(config["deep_sleep_sec"])
+                magtag.exit_and_deep_sleep(data_read_alarm)
 
 
 main()
