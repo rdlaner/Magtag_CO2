@@ -62,8 +62,7 @@ MQTT_CONNECT_ATTEMPTS = const(10)
 MQTT_RX_TIMEOUT_SEC = const(10)
 MQTT_KEEP_ALIVE_MARGIN_SEC = const(20)
 FORCE_CAL_DISABLED = const(-1)
-SCD30_SAMPLE_RATE_FAST_SEC = const(2)
-DEVICE_NAME = "Magtag_CO2"
+MAGTAG_BATT_DXN_VOLTAGE = 4.20
 SENSOR_NAME_BATTERY = "Batt Voltage"
 SENSOR_NAME_SCD30_CO2 = "SCD30 CO2"
 SENSOR_NAME_SCD30_HUM = "SCD30 Humidity"
@@ -220,9 +219,13 @@ def main() -> None:
     mqtt_client.on_message = mqtt_message
     network = MagtagNetwork(magtag, mqtt_client)
 
+    def read_batt():
+        volts = magtag.peripherals.battery
+        return volts if volts < MAGTAG_BATT_DXN_VOLTAGE else 0
+
     # Create home assistant sensors
     sensor_battery = HomeAssistantSensor(
-        SENSOR_NAME_BATTERY, lambda: magtag.peripherals.battery, 2, DeviceClass.BATTERY, "V")
+        SENSOR_NAME_BATTERY, read_batt, 2, DeviceClass.BATTERY, "V")
     sensor_scd30_co2 = HomeAssistantSensor(
         SENSOR_NAME_SCD30_CO2, lambda: scd30.CO2, 0, DeviceClass.CARBON_DIOXIDE, "ppm")
     sensor_scd30_hum = HomeAssistantSensor(
