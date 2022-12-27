@@ -73,6 +73,7 @@ NUMBER_NAME_PRESSURE = "Pressure"
 NUMBER_NAME_CO2_REF = "CO2 Ref"
 NON_VOL_NAME_PRESSURE = "pressure"
 NON_VOL_NAME_CAL = "forced cal"
+NON_VOL_NAME_TEMP_OFFSET = "temp offset"
 
 # Globals
 display_time = time.monotonic()
@@ -119,14 +120,20 @@ def mqtt_message(client: MQTT.MQTT, topic: str, message) -> None:
     elif topic == config["forced_cal_topic"]:
         try:
             obj = json.loads(message)
-            cal_val = obj[NUMBER_NAME_CO2_REF]
         except ValueError as e:
             print("Forced calibration value invalid")
             print(e)
             return
 
-        print(f"Updating nv cal to {cal_val}")
-        non_volatile_memory.set_element(NON_VOL_NAME_CAL, cal_val)
+        if NUMBER_NAME_CO2_REF in obj:
+            cal_val = obj[NUMBER_NAME_CO2_REF]
+            print(f"Updating nv cal to {cal_val}")
+            non_volatile_memory.set_element(NON_VOL_NAME_CAL, cal_val)
+
+        if NUMBER_NAME_TEMP_OFFSET in obj:
+            temp_offset = obj[NUMBER_NAME_TEMP_OFFSET]
+            print(f"Updating nv temp offset to {temp_offset}")
+            non_volatile_memory.set_element(NON_VOL_NAME_TEMP_OFFSET, temp_offset)
 
 
 def scd30_init(scd30: adafruit_scd30.SCD30) -> None:
@@ -172,7 +179,13 @@ def main() -> None:
             NON_VOL_NAME_PRESSURE, "I", config["ambient_pressure"])
         non_volatile_memory.add_element(
             NON_VOL_NAME_CAL, "i", FORCE_CAL_DISABLED)
+        non_volatile_memory.add_element(
+            NON_VOL_NAME_TEMP_OFFSET, "f", config["temp_offset_c"]
+        )
     non_volatile_memory.print_elements()
+    current_pressure = non_volatile_memory.get_element(NON_VOL_NAME_PRESSURE)
+    current_temp_offset = non_volatile_memory.get_element(NON_VOL_NAME_TEMP_OFFSET)
+    current_cal_val = non_volatile_memory.get_element(NON_VOL_NAME_CAL)
 
     red_led = digitalio.DigitalInOut(board.D13)
     red_led.switch_to_output(value=False)
@@ -220,13 +233,14 @@ def main() -> None:
     # Create home assistant numbers
     number_temp_offset = HomeAssistantNumber(
         NUMBER_NAME_TEMP_OFFSET,
-        lambda: scd30.temperature_offset,
+        lambda: non_volatile_memory.get_element(NON_VOL_NAME_TEMP_OFFSET),
+        precision=1,
         unit="°C",
         min_value=0,
         mode="box")
     number_pressure = HomeAssistantNumber(
         NUMBER_NAME_PRESSURE,
-        lambda: scd30.ambient_pressure,
+        lambda: non_volatile_memory.get_element(NON_VOL_NAME_PRESSURE),
         device_class=DeviceClass.PRESSURE,
         unit="mbar",
         min_value=100,
@@ -234,7 +248,7 @@ def main() -> None:
         mode="box")
     number_co2_ref = HomeAssistantNumber(
         NUMBER_NAME_CO2_REF,
-        lambda: scd30.forced_recalibration_reference,
+        lambda: non_volatile_memory.get_element(NON_VOL_NAME_CAL),
         device_class=DeviceClass.CARBON_DIOXIDE,
         unit="ppm",
         min_value=400,
@@ -304,16 +318,23 @@ def main() -> None:
 
         # Perform forced recal if received new cal value
         expected_cal_val = non_volatile_memory.get_element(NON_VOL_NAME_CAL)
-        current_cal_val = scd30.forced_recalibration_reference
         if expected_cal_val != FORCE_CAL_DISABLED and expected_cal_val != current_cal_val:
-            print(f"Updating SCD30 cal reference from {current_cal_val} to {expected_cal_val}")
+            print(f"Updating cal reference from {current_cal_val} to {expected_cal_val}")
+            current_cal_val = expected_cal_val
             scd30.forced_recalibration_reference = expected_cal_val
+
+        # Update temp offset if received a new value
+        expected_temp_offset = non_volatile_memory.get_element(NON_VOL_NAME_TEMP_OFFSET)
+        if expected_temp_offset != current_temp_offset:
+            print(f"Updating temp offset from {current_temp_offset} to {expected_temp_offset}")
+            current_temp_offset = expected_temp_offset
+            scd30.temperature_offset = expected_temp_offset
 
         # Update pressure if received a new value
         expected_pressure = non_volatile_memory.get_element(NON_VOL_NAME_PRESSURE)
-        current_pressure = scd30.ambient_pressure
         if expected_pressure != current_pressure:
-            print(f"Updating SCD30 pressure from {current_pressure} to {expected_pressure}")
+            print(f"Updating pressure from {current_pressure} to {expected_pressure}")
+            current_pressure = expected_pressure            
             scd30.ambient_pressure = expected_pressure
 
         # Update display
@@ -332,6 +353,7 @@ def main() -> None:
         print("")
 
         print("Sleeping...")
+        print("")
         if state_light_sleep:
             if state_light_sleep != runtime.serial_connected:
                 reload()  # State transition, reboot into deep sleep state
