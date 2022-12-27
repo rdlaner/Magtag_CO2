@@ -298,6 +298,10 @@ def main() -> None:
                 print("CO2 device MQTT discovery failure, rebooting\n", e)
                 reload()
 
+        # Service MQTT
+        print("Time: %0.2f" % time.monotonic())
+        network.loop(recover=state_light_sleep)
+
         # Publish data to MQTT
         print("Time: %0.2f" % time.monotonic())
         try:
@@ -310,10 +314,6 @@ def main() -> None:
                 network.recover()
             else:
                 return
-
-        # Service MQTT
-        print("Time: %0.2f" % time.monotonic())
-        network.loop(recover=state_light_sleep)
 
         # Turn off network if in deep sleep mode
         if not state_light_sleep:
