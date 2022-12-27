@@ -1,5 +1,6 @@
 import adafruit_minimqtt.adafruit_minimqtt as MQTT
 import adafruit_ntp
+import adafruit_scd4x
 import alarm
 import digitalio
 import board
@@ -64,9 +65,13 @@ MQTT_RX_TIMEOUT_SEC = const(10)
 MQTT_KEEP_ALIVE_MARGIN_SEC = const(20)
 FORCE_CAL_DISABLED = const(-1)
 TZ_OFFSET_PACIFIC = const(-8)
+SCD41_CMD_SINGLE_SHOT = const(0x219D)
 MAGTAG_BATT_DXN_VOLTAGE = 4.20
-DEVICE_NAME = "Test"
+DEVICE_NAME = "Magtag_CO2_SCD41"
 SENSOR_NAME_BATTERY = "Batt Voltage"
+SENSOR_NAME_SCD41_CO2 = "SCD41 CO2"
+SENSOR_NAME_SCD41_HUM = "SCD41 Humidity"
+SENSOR_NAME_SCD41_TEMP = "SCD41 Temperature"
 NUMBER_NAME_TEMP_OFFSET = "Temp Offset"
 NUMBER_NAME_PRESSURE = "Pressure"
 NUMBER_NAME_CO2_REF = "CO2 Ref"
@@ -153,6 +158,45 @@ def mqtt_message(client: MQTT.MQTT, topic: str, message) -> None:
             backup_ram.set_element(BACKUP_NAME_TEMP_OFFSET, temp_offset)
 
 
+def scd41_init(scd41: adafruit_scd4x.SCD4X) -> None:
+    # Only stop measurements and perform initializations once in order to prevent
+    # unnecessary latency in deep sleep mode
+    if not alarm.wake_alarm:
+        print("scd41 Config:")
+        # Measurements must be stopped to make config updates
+        scd41.stop_periodic_measurement()
+
+        print("Updating self cal mode to OFF")
+        scd41.self_calibration_enabled = False
+
+        temp_offset = backup_ram.get_element(BACKUP_NAME_TEMP_OFFSET)
+        print(f"Updating temperature offset to {temp_offset}")
+        scd41.temperature_offset = temp_offset
+
+        pressure = backup_ram.get_element(BACKUP_NAME_PRESSURE)
+        print(f"Updating pressure to {pressure}")
+        scd41.set_ambient_pressure(pressure)
+
+        print("Persisting settings to EEPROM")
+        scd41.persist_settings()
+
+        print("Performing SCD41 self test...")
+        try:
+            scd41.self_test()
+        except RuntimeError as e:
+            print(f"{e}. Rebooting...")
+            reload()
+        else:
+            print("Self test PASSED")
+
+    if state_light_sleep:
+        scd41.start_periodic_measurement()  # High performance mode
+    elif not alarm.wake_alarm:
+        # On first boot we'll need to start the first measurement
+        scd41._send_command(SCD41_CMD_SINGLE_SHOT)
+        time.sleep(5)
+
+
 def main() -> None:
     print("\nInitializing...")
     print(f"Time: {time.time()}")
@@ -178,6 +222,10 @@ def main() -> None:
 
     display = MagtagDisplay()
 
+    i2c = busio.I2C(board.SCL, board.SDA, frequency=50000)
+    scd41 = adafruit_scd4x.SCD4X(i2c)
+    scd41_init(scd41)
+
     socket_pool = socketpool.SocketPool(wifi.radio)
     keep_alive_sec = config["light_sleep_sec"] if state_light_sleep else config["deep_sleep_sec"]
     keep_alive_sec += MQTT_KEEP_ALIVE_MARGIN_SEC
@@ -198,6 +246,12 @@ def main() -> None:
     ntp = adafruit_ntp.NTP(socket_pool, tz_offset=TZ_OFFSET_PACIFIC)
     network = MagtagNetwork(magtag, mqtt_client, ntp)
 
+    # Sensor read functions
+    def read_co2():
+        while not scd41.data_ready:
+            time.sleep(0.5)
+        return scd41.CO2
+
     def read_batt():
         volts = magtag.peripherals.battery
         return volts if volts < MAGTAG_BATT_DXN_VOLTAGE else 0
@@ -205,6 +259,12 @@ def main() -> None:
     # Create home assistant sensors
     sensor_battery = HomeAssistantSensor(
         SENSOR_NAME_BATTERY, read_batt, 2, DeviceClass.BATTERY, "V")
+    sensor_scd41_co2 = HomeAssistantSensor(
+        SENSOR_NAME_SCD41_CO2, read_co2, 0, DeviceClass.CARBON_DIOXIDE, "ppm")
+    sensor_scd41_hum = HomeAssistantSensor(
+        SENSOR_NAME_SCD41_HUM, lambda: scd41.relative_humidity, 0, DeviceClass.HUMIDITY, "%")
+    sensor_scd41_temp = HomeAssistantSensor(
+        SENSOR_NAME_SCD41_TEMP, lambda: scd41.temperature, 1, DeviceClass.TEMPERATURE, "°C")
 
     # Create home assistant numbers
     number_temp_offset = HomeAssistantNumber(
@@ -233,6 +293,9 @@ def main() -> None:
 
     # Create home assistant device
     co2_device = HomeAssistantDevice(DEVICE_NAME, "Magtag", mqtt_client)
+    co2_device.add_sensor(sensor_scd41_co2)
+    co2_device.add_sensor(sensor_scd41_hum)
+    co2_device.add_sensor(sensor_scd41_temp)
     co2_device.add_sensor(sensor_battery)
     co2_device.add_number(number_temp_offset)
     co2_device.add_number(number_pressure)
@@ -280,7 +343,7 @@ def main() -> None:
             if network.ntp_time_sync():
                 backup_ram.set_element(BACKUP_NAME_TIME_SYNC_TIME, time.time())
                 print(f"Time: {get_fmt_time()}")
-                print(f"Data: {get_fmt_date()}")
+                print(f"Date: {get_fmt_date()}")
 
         # Upload data
         if (time.time() - upload_time) >= config["upload_rate_sec"] or first_boot or state_light_sleep:
@@ -319,16 +382,24 @@ def main() -> None:
         expected_cal_val = backup_ram.get_element(BACKUP_NAME_CAL)
         if expected_cal_val != FORCE_CAL_DISABLED and expected_cal_val != current_cal_val:
             print(f"Updating cal reference from {current_cal_val} to {expected_cal_val}")
+            scd41.force_calibration(expected_cal_val)
+            if state_light_sleep:
+                scd41.start_periodic_measurement()
 
         # Update temp offset if received a new value
         expected_temp_offset = backup_ram.get_element(BACKUP_NAME_TEMP_OFFSET)
         if expected_temp_offset != current_temp_offset:
             print(f"Updating temp offset from {current_temp_offset} to {expected_temp_offset}")
+            scd41.stop_periodic_measurement()
+            scd41.temperature_offset = expected_temp_offset
+            if state_light_sleep:
+                scd41.start_periodic_measurement()
 
         # Update pressure if received a new value
         expected_pressure = backup_ram.get_element(BACKUP_NAME_PRESSURE)
         if expected_pressure != current_pressure:
             print(f"Updating pressure from {current_pressure} to {expected_pressure}")
+            scd41.set_ambient_pressure(expected_pressure)
 
         # Update display
         if ((time.time() - display_time) >= config["display_refresh_rate_sec"]) or not state_light_sleep:
@@ -336,6 +407,9 @@ def main() -> None:
             print("Updating display...")
             now = get_fmt_time()
             uploaded_time = get_fmt_time(backup_ram.get_element(BACKUP_NAME_UPLOAD_TIME))
+            display.update_co2(sensor_data[SENSOR_NAME_SCD41_CO2])
+            display.update_temp(c_to_f(sensor_data[SENSOR_NAME_SCD41_TEMP]))
+            display.update_hum(sensor_data[SENSOR_NAME_SCD41_HUM])
             display.update_batt(sensor_data[SENSOR_NAME_BATTERY])
             display.update_datetime(f"Updated: {now}. Uploaded: {uploaded_time}")
             display.refresh(delay=False)
@@ -349,13 +423,16 @@ def main() -> None:
         if state_light_sleep:
             if state_light_sleep != runtime.serial_connected:
                 reload()  # State transition, reboot into deep sleep state
-            else:
-                magtag.enter_light_sleep(config["light_sleep_sec"])
+
+            magtag.enter_light_sleep(config["light_sleep_sec"])
         else:
             if state_light_sleep != runtime.serial_connected and config["force_deep_sleep"] is False:
                 reload()  # State transition, reboot into light sleep state
-            else:
-                magtag.exit_and_deep_sleep(config["deep_sleep_sec"])
+
+            # Send single shot command before going to deep sleep
+            scd41._send_command(SCD41_CMD_SINGLE_SHOT)
+
+            magtag.exit_and_deep_sleep(config["deep_sleep_sec"])
 
 
 main()
