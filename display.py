@@ -19,21 +19,30 @@ class MagtagDisplay:
 
     def __init__(self) -> None:
         self.display = board.DISPLAY
-        self.main_group = displayio.Group()
+        color_bitmap = displayio.Bitmap(self.display.width, self.display.height, 1)
+        color_palette = displayio.Palette(1)
+        color_palette[0] = 0xFFFFFF
+        self.bg_sprite = displayio.TileGrid(
+            color_bitmap,
+            pixel_shader=color_palette,
+            x=0,
+            y=0
+        )
+
         self.co2_label = label.Label(
-            font=terminalio.FONT, text=self.CO2_PREFIX, scale=3
+            font=terminalio.FONT, text=self.CO2_PREFIX, scale=3, color=0
         )
         self.temp_label = label.Label(
-            font=terminalio.FONT, text=self.TEMP_PREFIX, scale=1
+            font=terminalio.FONT, text=self.TEMP_PREFIX, scale=1, color=0
         )
         self.hum_label = label.Label(
-            font=terminalio.FONT, text=self.HUM_PREFIX, scale=1
+            font=terminalio.FONT, text=self.HUM_PREFIX, scale=1, color=0
         )
         self.batt_label = label.Label(
-            font=terminalio.FONT, text=self.BATT_PREFIX, scale=1
+            font=terminalio.FONT, text=self.BATT_PREFIX, scale=1, color=0
         )
         self.usb_label = label.Label(
-            font=terminalio.FONT, text="USB:", scale=1
+            font=terminalio.FONT, text="USB:", scale=1, color=0
         )
 
         self.co2_label.anchor_point = (0.5, 0.0)
@@ -47,6 +56,8 @@ class MagtagDisplay:
         self.usb_label.anchor_point = (0.5, 0)
         self.usb_label.anchored_position = (3 * self.display.width // 6, 100)
 
+        self.main_group = displayio.Group()
+        self.main_group.append(self.bg_sprite)
         self.main_group.append(self.co2_label)
         self.main_group.append(self.temp_label)
         self.main_group.append(self.hum_label)
