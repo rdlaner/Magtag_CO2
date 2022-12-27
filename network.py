@@ -1,5 +1,7 @@
 import adafruit_minimqtt.adafruit_minimqtt as MQTT
+import adafruit_ntp
 import ipaddress
+import rtc
 import time
 import wifi
 
@@ -12,9 +14,10 @@ class MagtagNetwork():
     CONNECT_ATTEMPTS_WIFI = 10
     GOOGLE_IP_ADDRESS = ipaddress.ip_address("8.8.4.4")
 
-    def __init__(self, magtag: MagTag, mqtt_client: MQTT.MQTT) -> None:
+    def __init__(self, magtag: MagTag, mqtt_client: MQTT.MQTT, ntp: adafruit_ntp.NTP = None) -> None:
         self.magtag = magtag
         self.mqtt_client = mqtt_client
+        self.ntp = ntp
 
     def _mqtt_connect(self, force: bool = False) -> None:
         print("Connecting MQTT client...")
@@ -104,3 +107,14 @@ class MagtagNetwork():
         # MQTT reconnect attempt
         self._mqtt_disconnect(force=True)
         self._mqtt_connect(force=True)
+
+    def ntp_time_sync(self) -> None:
+        if not self.ntp:
+            print("NTP time sync failed, no ntp object created.")
+            return
+
+        try:
+            rtc.RTC().datetime = self.ntp.datetime
+        except OSError as e:
+            print("NTP time sync failed!")
+            print(e)

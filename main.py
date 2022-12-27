@@ -1,4 +1,5 @@
 import adafruit_minimqtt.adafruit_minimqtt as MQTT
+import adafruit_ntp
 import alarm
 import digitalio
 import board
@@ -61,6 +62,7 @@ MQTT_CONNECT_ATTEMPTS = const(10)
 MQTT_RX_TIMEOUT_SEC = const(10)
 MQTT_KEEP_ALIVE_MARGIN_SEC = const(20)
 FORCE_CAL_DISABLED = const(-1)
+TZ_OFFSET_PACIFIC = const(-8)
 MAGTAG_BATT_DXN_VOLTAGE = 4.20
 DEVICE_NAME = "Test"
 SENSOR_NAME_BATTERY = "Batt Voltage"
@@ -70,6 +72,8 @@ NUMBER_NAME_CO2_REF = "CO2 Ref"
 NON_VOL_NAME_PRESSURE = "pressure"
 NON_VOL_NAME_CAL = "forced cal"
 NON_VOL_NAME_TEMP_OFFSET = "temp offset"
+TIME_FMT_STR = "%d:%02d:%02d"
+DATA_FMT_STR = "%d/%d/%d"
 
 # Globals
 state_light_sleep = runtime.serial_connected if not config["force_deep_sleep"] else False
@@ -78,6 +82,16 @@ non_volatile_memory = NonVolatileMemory()
 
 def c_to_f(temp_cels: float) -> float:
     return (temp_cels * 1.8) + 32.0 if temp_cels else None
+
+
+def get_fmt_time() -> str:
+    now = time.localtime()
+    return TIME_FMT_STR % (now[3], now[4], now[5])
+
+
+def get_fmt_date() -> str:
+    now = time.localtime()
+    return DATA_FMT_STR % (now[1], now[2], now[0])
 
 
 def mqtt_connected(client: MQTT.MQTT, user_data, flags, rc) -> None:
@@ -177,7 +191,8 @@ def main() -> None:
     mqtt_client.on_connect = mqtt_connected
     mqtt_client.on_disconnect = mqtt_disconnected
     mqtt_client.on_message = mqtt_message
-    network = MagtagNetwork(magtag, mqtt_client)
+    ntp = adafruit_ntp.NTP(socket_pool, tz_offset=TZ_OFFSET_PACIFIC)
+    network = MagtagNetwork(magtag, mqtt_client, ntp)
 
     def read_batt():
         volts = magtag.peripherals.battery
@@ -223,6 +238,7 @@ def main() -> None:
     config["cmd_topic"] = f"{co2_device.number_topic}/cmd"
 
     display_time = time.monotonic()
+    time_sync_time = display_time
     print("Time: %0.2f" % time.monotonic())
     print("")
 
@@ -248,6 +264,13 @@ def main() -> None:
             except (ValueError, RuntimeError, MQTT.MMQTTException) as e:
                 print("CO2 device MQTT discovery failure, rebooting\n", e)
                 reload()
+
+        # Time sync
+        if (time.monotonic() - time_sync_time) >= config["time_sync_period_sec"] or not alarm.wake_alarm:
+            network.ntp_time_sync()
+            time_sync_time = time.monotonic()
+            print(f"Time: {get_fmt_time()}")
+            print(f"Data: {get_fmt_date()}")
 
         # Service MQTT
         print("Time: %0.2f" % time.monotonic())
