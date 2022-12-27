@@ -11,7 +11,7 @@ ELEMENT_FORMAT = "BBs%ds%s"  # name_len, data_len, data_type, name, data type st
 ELEMENT_FORMAT_STR = ELEMENT_BYTE_ORDER + ELEMENT_FORMAT
 ELEMENT_NAME_LEN_OFFSET = const(0)
 ELEMENT_DATA_LEN_OFFSET = const(1)
-ELEMENT_DATA_TYPE_0FFSET = const(2)
+ELEMENT_DATA_TYPE_OFFSET = const(2)
 ELEMENT_NAME_OFFSET = const(3)
 
 
@@ -60,7 +60,7 @@ class NonVolatileMemory():
 
     def _element_get_data_type(self, start_byte: int) -> str:
         byte_data = bytearray(
-            [alarm.sleep_memory[start_byte + ELEMENT_DATA_TYPE_0FFSET]])
+            [alarm.sleep_memory[start_byte + ELEMENT_DATA_TYPE_OFFSET]])
         return struct.unpack_from(">s", byte_data, 0)[0].decode()
 
     def _element_get_name(self, start_byte: int) -> str:
@@ -68,7 +68,7 @@ class NonVolatileMemory():
         offset = start_byte +\
             struct.calcsize(ELEMENT_FORMAT[ELEMENT_NAME_LEN_OFFSET]) +\
             struct.calcsize(ELEMENT_FORMAT[ELEMENT_DATA_LEN_OFFSET]) +\
-            struct.calcsize(ELEMENT_FORMAT[ELEMENT_DATA_TYPE_0FFSET])
+            struct.calcsize(ELEMENT_FORMAT[ELEMENT_DATA_TYPE_OFFSET])
         byte_data = bytearray()
 
         for i in range(name_len):
@@ -83,7 +83,7 @@ class NonVolatileMemory():
         offset = start_byte +\
             struct.calcsize(ELEMENT_FORMAT[ELEMENT_NAME_LEN_OFFSET]) +\
             struct.calcsize(ELEMENT_FORMAT[ELEMENT_DATA_LEN_OFFSET]) +\
-            struct.calcsize(ELEMENT_FORMAT[ELEMENT_DATA_TYPE_0FFSET]) +\
+            struct.calcsize(ELEMENT_FORMAT[ELEMENT_DATA_TYPE_OFFSET]) +\
             name_len
         byte_data = bytearray()
 
@@ -97,7 +97,7 @@ class NonVolatileMemory():
         data_len = self._element_get_data_len(start_byte)
         size = struct.calcsize(ELEMENT_FORMAT[ELEMENT_NAME_LEN_OFFSET]) +\
             struct.calcsize(ELEMENT_FORMAT[ELEMENT_DATA_LEN_OFFSET]) +\
-            struct.calcsize(ELEMENT_FORMAT[ELEMENT_DATA_TYPE_0FFSET]) +\
+            struct.calcsize(ELEMENT_FORMAT[ELEMENT_DATA_TYPE_OFFSET]) +\
             name_len +\
             data_len
         return size
@@ -149,7 +149,7 @@ class NonVolatileMemory():
             print(f"{name}: {self.get_element(name)}")
 
     def reset(self):
-        print("Reseting nv memory...")
+        print("Resetting nv memory...")
         for i in range(len(alarm.sleep_memory)):
             alarm.sleep_memory[i] = 0
 

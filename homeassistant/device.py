@@ -46,12 +46,12 @@ class HomeAssistantDevice():
         number_unique_id = f"{self.device_id}_{number.device_name}"
         number.set_discovery_topic(f"{DISCOVERY_PREFIX}/number/{number_unique_id}/config")
         number.set_discovery_info("~", self.number_topic)
-        number.set_discovery_info("name", number.device_name)
+        number.set_discovery_info("obj_id", number.device_name)
         number.set_discovery_info("uniq_id", number_unique_id)
         number.set_discovery_info("dev", self.discovery_device)
         number.set_discovery_info(
             "val_tpl",
-            f"{{{{ value_json.{number.device_name} | round({number.precision}) }}}}"
+            f"{{{{ value_json.{number.name.replace(' ', '_')} | round({number.precision}) }}}}"
         )
 
         # Add to collection of device numbers
@@ -69,13 +69,13 @@ class HomeAssistantDevice():
         sensor_unique_id = f"{self.device_id}_{sensor.device_name}"
         sensor.set_discovery_topic(f"{DISCOVERY_PREFIX}/sensor/{sensor_unique_id}/config")
         sensor.set_discovery_info("~", self.sensor_topic)
-        sensor.set_discovery_info("name", sensor.device_name)
+        sensor.set_discovery_info("obj_id", sensor.device_name)
         sensor.set_discovery_info("stat_cla", "measurement")
         sensor.set_discovery_info("uniq_id", sensor_unique_id)
         sensor.set_discovery_info("dev", self.discovery_device)
         sensor.set_discovery_info(
             "val_tpl",
-            f"{{{{ value_json.{sensor.device_name} | round({sensor.precision}) }}}}"
+            f"{{{{ value_json.{sensor.sensor_name.replace(' ', '_')} | round({sensor.precision}) }}}}"
         )
 
         # Add to collection of device sensors
@@ -88,7 +88,7 @@ class HomeAssistantDevice():
         msg = {}
         for number in self.numbers:
             number_data = number.read()
-            msg[number.device_name] = number_data
+            msg[number.name.replace(' ', '_')] = number_data
 
         if self.debug:
             print(f"Publishing to {topic}:")
@@ -118,7 +118,7 @@ class HomeAssistantDevice():
             sensor_data = sensor.read()
             data[sensor.sensor_name] = sensor_data
             if cache:
-                cached_data[sensor.device_name] = sensor_data
+                cached_data[sensor.sensor_name.replace(' ', '_')] = sensor_data
 
         if cache:
             self.sensor_data_cache.append(cached_data)
