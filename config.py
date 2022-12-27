@@ -6,5 +6,5 @@ config = {
     "temp_offset_c": 1.0,
     "force_deep_sleep": False,
     "pressure_topic": "homeassistant/aranet/pressure",
-    "forced_cal_topic": "scd30/config/forced_cal"
+    "cmd_topic": "homeassistant/number/generic-device/cmd"
 }

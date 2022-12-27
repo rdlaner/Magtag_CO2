@@ -90,8 +90,8 @@ def mqtt_connected(client: MQTT.MQTT, user_data, flags, rc) -> None:
     # successfully to the broker.
     print(f"Subscribing to {config['pressure_topic']}...")
     client.subscribe(config["pressure_topic"])
-    print(f"Subscribing to {config['forced_cal_topic']}...")
-    client.subscribe(config["forced_cal_topic"])
+    print(f"Subscribing to {config['cmd_topic']}...")
+    client.subscribe(config["cmd_topic"])
 
 
 def mqtt_disconnected(client: MQTT.MQTT, user_data, rc) -> None:
@@ -117,7 +117,7 @@ def mqtt_message(client: MQTT.MQTT, topic: str, message) -> None:
         print(f"Updating nv pressure to {pressure}")
         non_volatile_memory.set_element(NON_VOL_NAME_PRESSURE, pressure)
 
-    elif topic == config["forced_cal_topic"]:
+    elif topic == config["cmd_topic"]:
         try:
             obj = json.loads(message)
         except ValueError as e:
@@ -265,8 +265,8 @@ def main() -> None:
     co2_device.add_number(number_pressure)
     co2_device.add_number(number_co2_ref)
 
-    # Set forced calibration topic, which will be subscribed to by mqtt_connected
-    config["forced_cal_topic"] = f"{co2_device.number_topic}/cmd"
+    # Set command topic
+    config["cmd_topic"] = f"{co2_device.number_topic}/cmd"
 
     display_time = time.monotonic()
     print("Time: %0.2f" % time.monotonic())
