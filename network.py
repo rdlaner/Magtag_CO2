@@ -108,13 +108,17 @@ class MagtagNetwork():
         self._mqtt_disconnect(force=True)
         self._mqtt_connect(force=True)
 
-    def ntp_time_sync(self) -> None:
+    def ntp_time_sync(self) -> bool:
         if not self.ntp:
             print("NTP time sync failed, no ntp object created.")
-            return
+            return False
 
+        result = True
         try:
             rtc.RTC().datetime = self.ntp.datetime
         except OSError as e:
             print("NTP time sync failed!")
             print(e)
+            result = False
+
+        return result

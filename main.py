@@ -267,10 +267,10 @@ def main() -> None:
 
         # Time sync
         if (time.monotonic() - time_sync_time) >= config["time_sync_period_sec"] or not alarm.wake_alarm:
-            network.ntp_time_sync()
-            time_sync_time = time.monotonic()
-            print(f"Time: {get_fmt_time()}")
-            print(f"Data: {get_fmt_date()}")
+            if network.ntp_time_sync():
+                time_sync_time = time.monotonic()
+                print(f"Time: {get_fmt_time()}")
+                print(f"Data: {get_fmt_date()}")
 
         # Service MQTT
         print("Time: %0.2f" % time.monotonic())
