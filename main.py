@@ -119,8 +119,7 @@ def mqtt_message(client: MQTT.MQTT, topic: str, message) -> None:
         try:
             pressure = round(float(message))
         except ValueError as e:
-            print("Ambient pressure value invalid")
-            print(e)
+            print(f"Ambient pressure value invalid\n{e}")
             return
 
         print(f"Updating nv pressure to {pressure}")
@@ -130,8 +129,7 @@ def mqtt_message(client: MQTT.MQTT, topic: str, message) -> None:
         try:
             obj = json.loads(message)
         except ValueError as e:
-            print("Forced calibration value invalid")
-            print(e)
+            print(f"Forced calibration value invalid\n{e}")
             return
 
         if NUMBER_NAME_CO2_REF in obj:
@@ -262,7 +260,7 @@ def main() -> None:
             try:
                 co2_device.send_discovery()
             except (ValueError, RuntimeError, MQTT.MMQTTException) as e:
-                print("CO2 device MQTT discovery failure, rebooting\n", e)
+                print(f"CO2 device MQTT discovery failure, rebooting\n{e}")
                 reload()
 
         # Time sync
@@ -283,11 +281,9 @@ def main() -> None:
             co2_device.publish_numbers()
             co2_device.publish_sensors()
         except (OSError, ValueError, RuntimeError, MQTT.MMQTTException) as e:
-            print("MQTT Publish failure\n", e)
+            print(f"MQTT Publish failure\n{e}")
             if state_light_sleep:
                 network.recover()
-            else:
-                return
 
         # Turn off network if in deep sleep mode
         if not state_light_sleep:
