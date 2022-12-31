@@ -218,7 +218,7 @@ def main() -> None:
 
     display = MagtagDisplay()
 
-    i2c = busio.I2C(board.SCL, board.SDA, frequency=50000)
+    i2c = busio.I2C(board.SCL, board.SDA, frequency=100000)
     scd41 = adafruit_scd4x.SCD4X(i2c)
     scd41_init(scd41)
 
