@@ -115,8 +115,9 @@ class MagtagDisplay:
 
         return text
 
-    def refresh(self):
-        time.sleep(self.display.time_to_refresh + 1)
+    def refresh(self, delay: bool = True):
+        if delay:
+            time.sleep(self.display.time_to_refresh + 1)
         self.display.refresh()
 
     def update_batt(self, val):

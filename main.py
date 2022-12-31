@@ -323,7 +323,7 @@ def main() -> None:
             print("Updating display...")
             display.update_batt(sensor_data[SENSOR_NAME_BATTERY])
             display.update_usb("T" if runtime.serial_connected else "F")
-            display.refresh()
+            display.refresh(delay=False)
             non_volatile_memory.set_element(NON_VOL_NAME_DISPLAY_TIME, int(time.monotonic()))
 
         print("Time: %0.2f" % time.monotonic())
