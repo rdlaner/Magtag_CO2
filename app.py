@@ -158,10 +158,10 @@ def mqtt_message(client: MQTT.MQTT, topic: str, message) -> None:
             backup_ram.set_element(BACKUP_NAME_TEMP_OFFSET, temp_offset)
 
 
-def scd41_init(scd41: adafruit_scd4x.SCD4X) -> None:
+def scd41_init(scd41: adafruit_scd4x.SCD4X, first_boot: bool) -> None:
     # Only stop measurements and perform initializations once in order to prevent
     # unnecessary latency in deep sleep mode
-    if not alarm.wake_alarm:
+    if first_boot:
         print("scd41 Config:")
         # Measurements must be stopped to make config updates
         scd41.stop_periodic_measurement()
@@ -179,15 +179,6 @@ def scd41_init(scd41: adafruit_scd4x.SCD4X) -> None:
 
         print("Persisting settings to EEPROM")
         scd41.persist_settings()
-
-        print("Performing SCD41 self test...")
-        try:
-            scd41.self_test()
-        except RuntimeError as e:
-            print(f"{e}. Rebooting...")
-            reload()
-        else:
-            print("Self test PASSED")
 
     if state_light_sleep:
         scd41.start_periodic_measurement()  # High performance mode
@@ -220,7 +211,7 @@ def main() -> None:
 
     i2c = busio.I2C(board.SCL, board.SDA, frequency=100000)
     scd41 = adafruit_scd4x.SCD4X(i2c)
-    scd41_init(scd41)
+    scd41_init(scd41, first_boot)
 
     socket_pool = socketpool.SocketPool(wifi.radio)
     keep_alive_sec = config["light_sleep_sec"] if state_light_sleep else config["deep_sleep_sec"]
