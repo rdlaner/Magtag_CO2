@@ -56,6 +56,7 @@ from supervisor import runtime, reload
 # TODO: Add config for publishing logs to mqtt
 # TODO: Fix circuitpython scd30 init which forces a 2 second measurement interval
 # TODO: Add base class for HA types (eg for sensor, number, etc.)
+# TODO: Add last read time to display
 
 # Constants
 MQTT_CONNECT_ATTEMPTS = const(10)
@@ -151,7 +152,8 @@ def main() -> None:
     print("Time: %0.2f" % time.monotonic())
 
     # Initialization
-    if not alarm.wake_alarm:
+    first_boot = not alarm.wake_alarm
+    if first_boot:
         # Initialize persistent data
         non_volatile_memory.reset()
         non_volatile_memory.add_element(
@@ -261,7 +263,7 @@ def main() -> None:
         print("Time: %0.2f" % time.monotonic())
 
         # Time sync
-        if (time.monotonic() - time_sync_time) >= config["time_sync_rate_sec"] or not alarm.wake_alarm:
+        if (time.monotonic() - time_sync_time) >= config["time_sync_rate_sec"] or first_boot:
             print("Time syncing...")
             network.connect()
             if network.ntp_time_sync():
@@ -270,7 +272,7 @@ def main() -> None:
                 print(f"Data: {get_fmt_date()}")
 
         # Upload data
-        if (time.monotonic() - upload_time) >= config["upload_rate_sec"] or not alarm.wake_alarm or state_light_sleep:
+        if (time.monotonic() - upload_time) >= config["upload_rate_sec"] or first_boot or state_light_sleep:
             print("Uploading data...")
             network.connect()
 
