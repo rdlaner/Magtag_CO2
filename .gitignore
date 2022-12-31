@@ -2,6 +2,7 @@
 __pycache__
 .vscode
 lib
+frozen
 
 # Files
 secrets.py
