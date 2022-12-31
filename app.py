@@ -191,10 +191,6 @@ def scd41_init(scd41: adafruit_scd4x.SCD4X) -> None:
 
     if state_light_sleep:
         scd41.start_periodic_measurement()  # High performance mode
-    elif not alarm.wake_alarm:
-        # On first boot we'll need to start the first measurement
-        scd41._send_command(SCD41_CMD_SINGLE_SHOT)
-        time.sleep(5)
 
 
 def main() -> None:
@@ -248,8 +244,13 @@ def main() -> None:
 
     # Sensor read functions
     def read_co2():
+        if not state_light_sleep:
+            # Send single shot command
+            scd41._send_command(SCD41_CMD_SINGLE_SHOT)
+            magtag.enter_light_sleep(4.5)
+
         while not scd41.data_ready:
-            time.sleep(0.5)
+            time.sleep(0.1)
         return scd41.CO2
 
     def read_batt():
@@ -293,7 +294,7 @@ def main() -> None:
 
     # Create home assistant device
     co2_device = HomeAssistantDevice(DEVICE_NAME, "Magtag", mqtt_client)
-    co2_device.add_sensor(sensor_scd41_co2)
+    co2_device.add_sensor(sensor_scd41_co2)  # Add first
     co2_device.add_sensor(sensor_scd41_hum)
     co2_device.add_sensor(sensor_scd41_temp)
     co2_device.add_sensor(sensor_battery)
@@ -428,9 +429,6 @@ def main() -> None:
         else:
             if state_light_sleep != runtime.serial_connected and config["force_deep_sleep"] is False:
                 reload()  # State transition, reboot into light sleep state
-
-            # Send single shot command before going to deep sleep
-            scd41._send_command(SCD41_CMD_SINGLE_SHOT)
 
             magtag.exit_and_deep_sleep(config["deep_sleep_sec"])
 
