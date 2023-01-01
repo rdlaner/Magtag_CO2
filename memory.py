@@ -15,7 +15,7 @@ ELEMENT_DATA_TYPE_OFFSET = const(2)
 ELEMENT_NAME_OFFSET = const(3)
 
 
-class NonVolatileMemory():
+class BackupRAM():
     def __init__(self, reset: bool = False) -> None:
         if reset:
             self.reset()
@@ -125,7 +125,7 @@ class NonVolatileMemory():
             data
         )
 
-        # Append element to non-volatile memory bytearray
+        # Append element to backup RAM bytearray
         index = self._get_free_index()
         num_elements = self._get_num_elems()
         self.elements[name] = index
@@ -144,7 +144,7 @@ class NonVolatileMemory():
         print(f"Free index: {self._get_free_index()}")
         print(f"Num elems: {self._get_num_elems()}")
 
-        print("Non-volatile elements:")
+        print("Backup RAM elements:")
         for name in self.elements.keys():
             print(f"{name}: {self.get_element(name)}")
 
