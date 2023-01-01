@@ -88,13 +88,19 @@ def c_to_f(temp_cels: float) -> float:
     return (temp_cels * 1.8) + 32.0 if temp_cels else None
 
 
-def get_fmt_time() -> str:
-    now = time.localtime()
+def get_fmt_time(epoch_time: int = None) -> str:
+    if epoch_time:
+        now = time.localtime(epoch_time)
+    else:
+        now = time.localtime()
     return TIME_FMT_STR % (now[3], now[4], now[5])
 
 
-def get_fmt_date() -> str:
-    now = time.localtime()
+def get_fmt_date(epoch_time: int = None) -> str:
+    if epoch_time:
+        now = time.localtime(epoch_time)
+    else:
+        now = time.localtime()
     return DATA_FMT_STR % (now[1], now[2], now[0])
 
 
@@ -328,8 +334,10 @@ def main() -> None:
         if ((time.time() - display_time) >= config["display_refresh_rate_sec"]) or not state_light_sleep:
             print(f"Time: {time.time()}")
             print("Updating display...")
+            now = get_fmt_time()
+            uploaded_time = get_fmt_time(non_volatile_memory.get_element(NON_VOL_NAME_UPLOAD_TIME))
             display.update_batt(sensor_data[SENSOR_NAME_BATTERY])
-            display.update_usb(f"Updated: {get_fmt_time()}")
+            display.update_datetime(f"Updated: {now}. Uploaded: {uploaded_time}")
             display.refresh(delay=False)
             non_volatile_memory.set_element(NON_VOL_NAME_DISPLAY_TIME, time.time())
 

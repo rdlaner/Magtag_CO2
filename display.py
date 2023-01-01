@@ -41,8 +41,8 @@ class MagtagDisplay:
         self.batt_label = label.Label(
             font=terminalio.FONT, text=self.BATT_PREFIX, scale=1, color=0
         )
-        self.usb_label = label.Label(
-            font=terminalio.FONT, text="USB:", scale=1, color=0
+        self.datetime_label = label.Label(
+            font=terminalio.FONT, text="", scale=1, color=0
         )
 
         self.co2_label.anchor_point = (0.5, 0.0)
@@ -53,8 +53,8 @@ class MagtagDisplay:
         self.hum_label.anchored_position = (3 * self.display.width // 6, 80)
         self.batt_label.anchor_point = (0.5, 0)
         self.batt_label.anchored_position = (5 * self.display.width // 6, 80)
-        self.usb_label.anchor_point = (0.5, 0)
-        self.usb_label.anchored_position = (3 * self.display.width // 6, 100)
+        self.datetime_label.anchor_point = (0.5, 0)
+        self.datetime_label.anchored_position = (3 * self.display.width // 6, 100)
 
         self.main_group = displayio.Group()
         self.main_group.append(self.bg_sprite)
@@ -62,7 +62,7 @@ class MagtagDisplay:
         self.main_group.append(self.temp_label)
         self.main_group.append(self.hum_label)
         self.main_group.append(self.batt_label)
-        self.main_group.append(self.usb_label)
+        self.main_group.append(self.datetime_label)
         self.display.show(self.main_group)
 
     def _build_text_batt(self, batt_val):
@@ -105,12 +105,12 @@ class MagtagDisplay:
 
         return text
 
-    def _build_text_usb(self, usb_val):
+    def _build_text_datetime(self, datetime_val):
         try:
-            text = f"USB: {usb_val}"
+            text = f"{datetime_val}"
         except ValueError as e:
             text = None
-            print(f"Invalid display value: {usb_val}")
+            print(f"Invalid display value: {datetime_val}")
             print(e)
 
         return text
@@ -140,7 +140,7 @@ class MagtagDisplay:
         if text:
             self.temp_label.text = text
 
-    def update_usb(self, val):
-        text = self._build_text_usb(val)
+    def update_datetime(self, val):
+        text = self._build_text_datetime(val)
         if text:
-            self.usb_label.text = text
+            self.datetime_label.text = text
