@@ -1,1 +1,0 @@
-DISCOVERY_PREFIX = "homeassistant"
