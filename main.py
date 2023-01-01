@@ -149,9 +149,8 @@ def mqtt_message(client: MQTT.MQTT, topic: str, message) -> None:
 
 def main() -> None:
     print("\nInitializing...")
-    print("Time: %0.2f" % time.monotonic())
+    print(f"Time: {time.time()}")
 
-    # Initialization
     first_boot = not alarm.wake_alarm
     if first_boot:
         # Initialize persistent data
@@ -163,11 +162,6 @@ def main() -> None:
         non_volatile_memory.add_element(
             NON_VOL_NAME_TEMP_OFFSET, "f", config["temp_offset_c"]
         )
-        now = int(time.monotonic())
-        non_volatile_memory.add_element(NON_VOL_NAME_DISPLAY_TIME, "I", now)
-        non_volatile_memory.add_element(NON_VOL_NAME_TIME_SYNC_TIME, "I", now)
-        non_volatile_memory.add_element(NON_VOL_NAME_UPLOAD_TIME, "I", now)
-    non_volatile_memory.print_elements()
 
     red_led = digitalio.DigitalInOut(board.D13)
     red_led.switch_to_output(value=False)
@@ -241,13 +235,24 @@ def main() -> None:
     # Set command topic
     config["cmd_topic"] = f"{co2_device.number_topic}/cmd"
 
-    print("Time: %0.2f" % time.monotonic())
+    # Time sync on first boot
+    if first_boot:
+        network.connect()
+        network.ntp_time_sync()
+
+        now = time.time()
+        non_volatile_memory.add_element(NON_VOL_NAME_DISPLAY_TIME, "I", now)
+        non_volatile_memory.add_element(NON_VOL_NAME_TIME_SYNC_TIME, "I", now)
+        non_volatile_memory.add_element(NON_VOL_NAME_UPLOAD_TIME, "I", now)
+
+    non_volatile_memory.print_elements()
+    print(f"Time: {time.time()}")
     print("")
 
     # Main Loop
     while True:
         print("Processing...")
-        print("Time: %0.2f" % time.monotonic())
+        print(f"Time: {time.time()}")
 
         # Load non-volatile data
         display_time = non_volatile_memory.get_element(NON_VOL_NAME_DISPLAY_TIME)
@@ -260,19 +265,19 @@ def main() -> None:
         print("Reading sensors...")
         sensor_data = co2_device.read_sensors(cache=True)
         print(sensor_data)
-        print("Time: %0.2f" % time.monotonic())
+        print(f"Time: {time.time()}")
 
         # Time sync
-        if (time.monotonic() - time_sync_time) >= config["time_sync_rate_sec"] or first_boot:
+        if (time.time() - time_sync_time) >= config["time_sync_rate_sec"] or first_boot:
             print("Time syncing...")
             network.connect()
             if network.ntp_time_sync():
-                non_volatile_memory.set_element(NON_VOL_NAME_TIME_SYNC_TIME, int(time.monotonic()))
+                non_volatile_memory.set_element(NON_VOL_NAME_TIME_SYNC_TIME, time.time())
                 print(f"Time: {get_fmt_time()}")
                 print(f"Data: {get_fmt_date()}")
 
         # Upload data
-        if (time.monotonic() - upload_time) >= config["upload_rate_sec"] or first_boot or state_light_sleep:
+        if (time.time() - upload_time) >= config["upload_rate_sec"] or first_boot or state_light_sleep:
             print("Uploading data...")
             network.connect()
 
@@ -284,11 +289,11 @@ def main() -> None:
                 reload()
 
             # Service MQTT
-            print("Time: %0.2f" % time.monotonic())
+            print(f"Time: {time.time()}")
             network.loop(recover=state_light_sleep)
 
             # Publish data to MQTT
-            print("Time: %0.2f" % time.monotonic())
+            print(f"Time: {time.time()}")
             try:
                 print("Publishing MQTT data...")
                 co2_device.publish_numbers()
@@ -298,7 +303,7 @@ def main() -> None:
                 if state_light_sleep:
                     network.recover()
 
-            non_volatile_memory.set_element(NON_VOL_NAME_UPLOAD_TIME, int(time.monotonic()))
+            non_volatile_memory.set_element(NON_VOL_NAME_UPLOAD_TIME, time.time())
 
         # Turn off network if in deep sleep mode
         if not state_light_sleep and network.is_connected():
@@ -320,15 +325,15 @@ def main() -> None:
             print(f"Updating pressure from {current_pressure} to {expected_pressure}")
 
         # Update display
-        if ((time.monotonic() - display_time) >= config["display_refresh_rate_sec"]) or not state_light_sleep:
-            print("Time: %0.2f" % time.monotonic())
+        if ((time.time() - display_time) >= config["display_refresh_rate_sec"]) or not state_light_sleep:
+            print(f"Time: {time.time()}")
             print("Updating display...")
             display.update_batt(sensor_data[SENSOR_NAME_BATTERY])
-            display.update_usb("T" if runtime.serial_connected else "F")
+            display.update_usb(f"Updated: {get_fmt_time()}")
             display.refresh(delay=False)
-            non_volatile_memory.set_element(NON_VOL_NAME_DISPLAY_TIME, int(time.monotonic()))
+            non_volatile_memory.set_element(NON_VOL_NAME_DISPLAY_TIME, time.time())
 
-        print("Time: %0.2f" % time.monotonic())
+        print(f"Time: {time.time()}")
         print("")
 
         print("Sleeping...")
