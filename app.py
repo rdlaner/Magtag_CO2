@@ -6,6 +6,7 @@ import digitalio
 import board
 import busio
 import json
+import microcontroller
 import socketpool
 import ssl
 import time
@@ -22,9 +23,9 @@ from memory import BackupRAM
 from micropython import const
 from network import MagtagNetwork
 from secrets import secrets
-from supervisor import runtime, reload
+from supervisor import runtime, reload, RunReason
 
-
+print(f"Time: {time.time()}")
 # NOTE: SCD30 takes a few seconds to produce data after sample_rate period
 # NOTE: (Re-)Initializing SCD30/I2C bus before its measurement interval
 # has finished means the interval will reset, effectively doubling the interval
@@ -66,6 +67,10 @@ MQTT_KEEP_ALIVE_MARGIN_SEC = const(20)
 FORCE_CAL_DISABLED = const(-1)
 TZ_OFFSET_PACIFIC = const(-8)
 SCD41_CMD_SINGLE_SHOT = const(0x219D)
+SAMPLING_SEC = const(4)
+STATE_LIGHT_SLEEP = const(0)
+STATE_DEEP_SLEEP_SAMPLING = const(1)
+STATE_DEEP_SLEEP = const(2)
 MAGTAG_BATT_DXN_VOLTAGE = 4.20
 DEVICE_NAME = "Magtag_CO2_SCD41"
 SENSOR_NAME_BATTERY = "Batt Voltage"
@@ -81,11 +86,12 @@ BACKUP_NAME_TEMP_OFFSET = "temp offset"
 BACKUP_NAME_DISPLAY_TIME = "display"
 BACKUP_NAME_TIME_SYNC_TIME = "time sync"
 BACKUP_NAME_UPLOAD_TIME = "upload"
+BACKUP_NAME_STATE = "state"
+BACKUP_NAME_FIRST_TIME_SYNC = "first sync"
 TIME_FMT_STR = "%d:%02d:%02d"
 DATA_FMT_STR = "%d/%d/%d"
 
 # Globals
-state_light_sleep = runtime.serial_connected if not config["force_deep_sleep"] else False
 backup_ram = BackupRAM()
 
 
@@ -158,37 +164,142 @@ def mqtt_message(client: MQTT.MQTT, topic: str, message) -> None:
             backup_ram.set_element(BACKUP_NAME_TEMP_OFFSET, temp_offset)
 
 
-def scd41_init(scd41: adafruit_scd4x.SCD4X, first_boot: bool) -> None:
+def process_calibration(scd41: adafruit_scd4x, current_cal_val: int) -> bool:
+    """Perform forced recal if received new cal value"""
+    updated = False
+    expected_cal_val = backup_ram.get_element(BACKUP_NAME_CAL)
+
+    if expected_cal_val != FORCE_CAL_DISABLED and expected_cal_val != current_cal_val:
+        print(f"Updating cal reference from {current_cal_val} to {expected_cal_val}")
+        scd41.force_calibration(expected_cal_val)
+        updated = True
+
+    return updated
+
+
+def process_pressure(scd41: adafruit_scd4x, current_pressure: int) -> bool:
+    """Update pressure if received a new value"""
+    updated = False
+    expected_pressure = backup_ram.get_element(BACKUP_NAME_PRESSURE)
+
+    if expected_pressure != current_pressure:
+        print(f"Updating pressure from {current_pressure} to {expected_pressure}")
+        scd41.set_ambient_pressure(expected_pressure)
+        updated = True
+
+    return updated
+
+
+def process_temp_offset(scd41: adafruit_scd4x, current_temp_offset: float) -> bool:
+    """Update temp offset if received a new value"""
+    updated = False
+    expected_temp_offset = backup_ram.get_element(BACKUP_NAME_TEMP_OFFSET)
+
+    if expected_temp_offset != current_temp_offset:
+        print(f"Updating temp offset from {current_temp_offset} to {expected_temp_offset}")
+        scd41.stop_periodic_measurement()
+        scd41.temperature_offset = expected_temp_offset
+        updated = True
+
+    return updated
+
+
+def scd41_init(scd41: adafruit_scd4x.SCD4X) -> None:
     # Only stop measurements and perform initializations once in order to prevent
     # unnecessary latency in deep sleep mode
-    if first_boot:
-        print("scd41 Config:")
-        # Measurements must be stopped to make config updates
-        scd41.stop_periodic_measurement()
+    print("scd41 Config:")
+    # Measurements must be stopped to make config updates
+    scd41.stop_periodic_measurement()
 
-        print("Updating self cal mode to OFF")
-        scd41.self_calibration_enabled = False
+    print("Updating self cal mode to OFF")
+    scd41.self_calibration_enabled = False
 
-        temp_offset = backup_ram.get_element(BACKUP_NAME_TEMP_OFFSET)
-        print(f"Updating temperature offset to {temp_offset}")
-        scd41.temperature_offset = temp_offset
+    temp_offset = backup_ram.get_element(BACKUP_NAME_TEMP_OFFSET)
+    print(f"Updating temperature offset to {temp_offset}")
+    scd41.temperature_offset = temp_offset
 
-        pressure = backup_ram.get_element(BACKUP_NAME_PRESSURE)
-        print(f"Updating pressure to {pressure}")
-        scd41.set_ambient_pressure(pressure)
+    pressure = backup_ram.get_element(BACKUP_NAME_PRESSURE)
+    print(f"Updating pressure to {pressure}")
+    scd41.set_ambient_pressure(pressure)
 
-        print("Persisting settings to EEPROM")
-        scd41.persist_settings()
+    print("Persisting settings to EEPROM")
+    scd41.persist_settings()
 
-    if state_light_sleep:
-        scd41.start_periodic_measurement()  # High performance mode
+
+def time_sync(time_sync_time: int, network: MagtagNetwork):
+    if (time.time() - time_sync_time) >= config["time_sync_rate_sec"]:
+        print("Time syncing...")
+        if not network.is_connected():
+            network.connect()
+
+        if network.ntp_time_sync():
+            backup_ram.set_element(BACKUP_NAME_TIME_SYNC_TIME, time.time())
+            print(f"Time: {get_fmt_time()}")
+            print(f"Date: {get_fmt_date()}")
+
+
+def update_display(display_time: int, display, sensor_data: list):
+    if ((time.time() - display_time) >= config["display_refresh_rate_sec"]):
+        print(f"Time: {time.time()}")
+        print("Updating display...")
+        now = get_fmt_time()
+        uploaded_time = get_fmt_time(backup_ram.get_element(BACKUP_NAME_UPLOAD_TIME))
+        display.update_co2(sensor_data[SENSOR_NAME_SCD41_CO2])
+        display.update_temp(c_to_f(sensor_data[SENSOR_NAME_SCD41_TEMP]))
+        display.update_hum(sensor_data[SENSOR_NAME_SCD41_HUM])
+        display.update_batt(sensor_data[SENSOR_NAME_BATTERY])
+        display.update_datetime(f"Updated: {now}. Uploaded: {uploaded_time}")
+        display.refresh(delay=False)
+        backup_ram.set_element(BACKUP_NAME_DISPLAY_TIME, time.time())
+
+
+def update_state(new_state: int):
+    backup_ram.set_element(BACKUP_NAME_STATE, new_state)
+
+
+def upload_data(upload_time: int, co2_device: HomeAssistantDevice, network: MagtagNetwork, recover: bool = False):
+    if (time.time() - upload_time) >= config["upload_rate_sec"]:
+        print("Uploading data...")
+        if not network.is_connected():
+            network.connect()
+
+        # Send home assistant mqtt discovery
+        try:
+            co2_device.send_discovery()
+        except (ValueError, RuntimeError, MQTT.MMQTTException) as e:
+            print(f"CO2 device MQTT discovery failure, rebooting\n{e}")
+            reload()
+
+        # Service MQTT
+        print(f"Time: {time.time()}")
+        network.loop(recover=recover)
+
+        # Publish data to MQTT
+        print(f"Time: {time.time()}")
+        try:
+            print("Publishing MQTT data...")
+            co2_device.publish_numbers()
+            co2_device.publish_sensors()
+        except (OSError, ValueError, RuntimeError, MQTT.MMQTTException) as e:
+            print(f"MQTT Publish failure\n{e}")
+            if recover:
+                network.recover()
+
+        backup_ram.set_element(BACKUP_NAME_UPLOAD_TIME, time.time())
 
 
 def main() -> None:
+    if runtime.run_reason == RunReason.SUPERVISOR_RELOAD:
+        first_boot = False
+    else:
+        first_boot = not alarm.wake_alarm
+
+    print(f"Reset reason: {microcontroller.cpu.reset_reason}")
+    print(f"Run reason: {runtime.run_reason}")
+    print(f"First boot: {first_boot}")
     print("\nInitializing...")
     print(f"Time: {time.time()}")
 
-    first_boot = not alarm.wake_alarm
     if first_boot:
         # Initialize persistent data
         backup_ram.reset()
@@ -199,23 +310,54 @@ def main() -> None:
         backup_ram.add_element(
             BACKUP_NAME_TEMP_OFFSET, "f", config["temp_offset_c"]
         )
+        backup_ram.add_element(
+            BACKUP_NAME_FIRST_TIME_SYNC, "B", True
+        )
 
-    red_led = digitalio.DigitalInOut(board.D13)
-    red_led.switch_to_output(value=False)
+        if runtime.serial_connected and not config["force_deep_sleep"]:
+            initial_state = STATE_LIGHT_SLEEP
+        else:
+            initial_state = STATE_DEEP_SLEEP_SAMPLING
 
+        backup_ram.add_element(
+            BACKUP_NAME_STATE, "I", initial_state
+        )
+
+    # Initialize critical components first
+    device_state = backup_ram.get_element(BACKUP_NAME_STATE)
     magtag = MagTag()
-    magtag.peripherals.neopixel_disable = True
-    magtag.peripherals.speaker_disable = True
-
-    display = MagtagDisplay()
-
     i2c = busio.I2C(board.SCL, board.SDA, frequency=100000)
     scd41 = adafruit_scd4x.SCD4X(i2c)
-    scd41_init(scd41, first_boot)
+    if first_boot:
+        scd41_init(scd41)
+    if device_state == STATE_LIGHT_SLEEP:
+        scd41.start_periodic_measurement()  # High performance mode
 
+    # If in STATE_DEEP_SLEEP_SAMPLING, we don't need to take up time with the
+    # rest of initialization. So, handle STATE_DEEP_SLEEP_SAMPLING here.
+    if device_state == STATE_DEEP_SLEEP_SAMPLING:
+        # Send single shot command and then go to sleep
+        print("Sending single shot...")
+        scd41._send_command(SCD41_CMD_SINGLE_SHOT)
+
+        print(f"Time: {time.time()}\n")
+        print("Sleeping...\n")
+        update_state(STATE_DEEP_SLEEP)
+        magtag.exit_and_deep_sleep(SAMPLING_SEC)
+
+    # Init Magtag device and display
+    red_led = digitalio.DigitalInOut(board.D13)
+    red_led.switch_to_output(value=False)
+    magtag.peripherals.neopixel_disable = True
+    magtag.peripherals.speaker_disable = True
+    display = MagtagDisplay()
+
+    # Init network devices
     socket_pool = socketpool.SocketPool(wifi.radio)
-    keep_alive_sec = config["light_sleep_sec"] if state_light_sleep else config["deep_sleep_sec"]
-    keep_alive_sec += MQTT_KEEP_ALIVE_MARGIN_SEC
+    if device_state == STATE_LIGHT_SLEEP:
+        keep_alive_sec = config["light_sleep_sec"] + MQTT_KEEP_ALIVE_MARGIN_SEC
+    else:
+        keep_alive_sec = config["deep_sleep_sec"] + MQTT_KEEP_ALIVE_MARGIN_SEC
     mqtt_client = MQTT.MQTT(
         broker=secrets["mqtt_broker"],
         port=secrets["mqtt_port"],
@@ -235,11 +377,6 @@ def main() -> None:
 
     # Sensor read functions
     def read_co2():
-        if not state_light_sleep:
-            # Send single shot command
-            scd41._send_command(SCD41_CMD_SINGLE_SHOT)
-            magtag.enter_light_sleep(4.5)
-
         while not scd41.data_ready:
             time.sleep(0.1)
         return scd41.CO2
@@ -296,15 +433,17 @@ def main() -> None:
     # Set command topic
     config["cmd_topic"] = f"{co2_device.number_topic}/cmd"
 
-    # Time sync on first boot
-    if first_boot:
+    # Time sync before first time through main loop
+    first_sync = backup_ram.get_element(BACKUP_NAME_FIRST_TIME_SYNC)
+    if first_sync:
         network.connect()
         network.ntp_time_sync()
-
         now = time.time()
+
         backup_ram.add_element(BACKUP_NAME_DISPLAY_TIME, "I", now)
         backup_ram.add_element(BACKUP_NAME_TIME_SYNC_TIME, "I", now)
         backup_ram.add_element(BACKUP_NAME_UPLOAD_TIME, "I", now)
+        backup_ram.set_element(BACKUP_NAME_FIRST_TIME_SYNC, False)
 
     backup_ram.print_elements()
     print(f"Time: {time.time()}")
@@ -323,105 +462,71 @@ def main() -> None:
         current_temp_offset = backup_ram.get_element(BACKUP_NAME_TEMP_OFFSET)
         current_cal_val = backup_ram.get_element(BACKUP_NAME_CAL)
 
-        print("Reading sensors...")
-        sensor_data = co2_device.read_sensors(cache=True)
-        print(sensor_data)
-        print(f"Time: {time.time()}")
+        # State Machine
+        if device_state == STATE_LIGHT_SLEEP:
+            print("Reading sensors...")
+            sensor_data = co2_device.read_sensors(cache=True)
+            print(sensor_data)
+            print(f"Time: {time.time()}")
 
-        # Time sync
-        if (time.time() - time_sync_time) >= config["time_sync_rate_sec"] or first_boot:
-            print("Time syncing...")
-            network.connect()
-            if network.ntp_time_sync():
-                backup_ram.set_element(BACKUP_NAME_TIME_SYNC_TIME, time.time())
-                print(f"Time: {get_fmt_time()}")
-                print(f"Date: {get_fmt_date()}")
+            time_sync(time_sync_time, network)
 
-        # Upload data
-        if (time.time() - upload_time) >= config["upload_rate_sec"] or first_boot or state_light_sleep:
-            print("Uploading data...")
-            network.connect()
+            config["upload_rate_sec"] = config["light_sleep_sec"]
+            upload_data(upload_time, co2_device, network, recover=True)
 
-            # Send home assistant mqtt discovery
-            try:
-                co2_device.send_discovery()
-            except (ValueError, RuntimeError, MQTT.MMQTTException) as e:
-                print(f"CO2 device MQTT discovery failure, rebooting\n{e}")
+            if process_calibration(scd41, current_cal_val):
+                scd41.start_periodic_measurement()
+
+            if process_temp_offset(scd41, current_temp_offset):
+                scd41.start_periodic_measurement()
+
+            process_pressure(scd41, current_pressure)
+
+            update_display(display_time, display, sensor_data)
+
+            print(f"Time: {time.time()}\n")
+            if not runtime.serial_connected or config["force_deep_sleep"]:
+                # State transition, reboot into deep sleep state
+                update_state(STATE_DEEP_SLEEP_SAMPLING)
+                print("Updated sleep should be deep sleep")
+                backup_ram.print_elements()
                 reload()
+            else:
+                print("Sleeping...\n")
+                magtag.enter_light_sleep(config["light_sleep_sec"])
 
-            # Service MQTT
+        elif device_state == STATE_DEEP_SLEEP:
+            print("Reading sensors...")
+            sensor_data = co2_device.read_sensors(cache=True)
+            print(sensor_data)
             print(f"Time: {time.time()}")
-            network.loop(recover=state_light_sleep)
 
-            # Publish data to MQTT
-            print(f"Time: {time.time()}")
-            try:
-                print("Publishing MQTT data...")
-                co2_device.publish_numbers()
-                co2_device.publish_sensors()
-            except (OSError, ValueError, RuntimeError, MQTT.MMQTTException) as e:
-                print(f"MQTT Publish failure\n{e}")
-                if state_light_sleep:
-                    network.recover()
+            time_sync(time_sync_time, network)
 
-            backup_ram.set_element(BACKUP_NAME_UPLOAD_TIME, time.time())
+            upload_data(upload_time, co2_device, network)
 
-        # Turn off network if in deep sleep mode
-        if not state_light_sleep and network.is_connected():
-            network.disconnect()
+            process_calibration(scd41, current_cal_val)
 
-        # Perform forced recal if received new cal value
-        expected_cal_val = backup_ram.get_element(BACKUP_NAME_CAL)
-        if expected_cal_val != FORCE_CAL_DISABLED and expected_cal_val != current_cal_val:
-            print(f"Updating cal reference from {current_cal_val} to {expected_cal_val}")
-            scd41.force_calibration(expected_cal_val)
-            if state_light_sleep:
-                scd41.start_periodic_measurement()
+            process_temp_offset(scd41, current_temp_offset)
 
-        # Update temp offset if received a new value
-        expected_temp_offset = backup_ram.get_element(BACKUP_NAME_TEMP_OFFSET)
-        if expected_temp_offset != current_temp_offset:
-            print(f"Updating temp offset from {current_temp_offset} to {expected_temp_offset}")
-            scd41.stop_periodic_measurement()
-            scd41.temperature_offset = expected_temp_offset
-            if state_light_sleep:
-                scd41.start_periodic_measurement()
+            process_pressure(scd41, current_pressure)
 
-        # Update pressure if received a new value
-        expected_pressure = backup_ram.get_element(BACKUP_NAME_PRESSURE)
-        if expected_pressure != current_pressure:
-            print(f"Updating pressure from {current_pressure} to {expected_pressure}")
-            scd41.set_ambient_pressure(expected_pressure)
+            update_display(display_time, display, sensor_data)
 
-        # Update display
-        if ((time.time() - display_time) >= config["display_refresh_rate_sec"]) or not state_light_sleep:
-            print(f"Time: {time.time()}")
-            print("Updating display...")
-            now = get_fmt_time()
-            uploaded_time = get_fmt_time(backup_ram.get_element(BACKUP_NAME_UPLOAD_TIME))
-            display.update_co2(sensor_data[SENSOR_NAME_SCD41_CO2])
-            display.update_temp(c_to_f(sensor_data[SENSOR_NAME_SCD41_TEMP]))
-            display.update_hum(sensor_data[SENSOR_NAME_SCD41_HUM])
-            display.update_batt(sensor_data[SENSOR_NAME_BATTERY])
-            display.update_datetime(f"Updated: {now}. Uploaded: {uploaded_time}")
-            display.refresh(delay=False)
-            backup_ram.set_element(BACKUP_NAME_DISPLAY_TIME, time.time())
+            if network.is_connected():
+                network.disconnect()
 
-        print(f"Time: {time.time()}")
-        print("")
-
-        print("Sleeping...")
-        print("")
-        if state_light_sleep:
-            if state_light_sleep != runtime.serial_connected:
-                reload()  # State transition, reboot into deep sleep state
-
-            magtag.enter_light_sleep(config["light_sleep_sec"])
+            print(f"Time: {time.time()}\n")
+            if runtime.serial_connected and not config["force_deep_sleep"]:
+                # State transition, reboot into light sleep state
+                update_state(STATE_LIGHT_SLEEP)
+                reload()
+            else:
+                print("Sleeping...\n")
+                update_state(STATE_DEEP_SLEEP_SAMPLING)
+                magtag.exit_and_deep_sleep(config["deep_sleep_sec"])
         else:
-            if state_light_sleep != runtime.serial_connected and config["force_deep_sleep"] is False:
-                reload()  # State transition, reboot into light sleep state
-
-            magtag.exit_and_deep_sleep(config["deep_sleep_sec"])
+            raise Exception(f"Unknown state: {device_state}")
 
 
 main()
