@@ -1,3 +1,6 @@
+import time
+print(f"Time start: {time.monotonic()}")
+
 import adafruit_minimqtt.adafruit_minimqtt as MQTT
 import adafruit_ntp
 import adafruit_scd4x
@@ -5,27 +8,30 @@ import alarm
 import digitalio
 import board
 import busio
+import gc
 import json
 import microcontroller
 import socketpool
 import ssl
-import time
 import wifi
 
-from adafruit_magtag.magtag import MagTag
+print(f"Time imports: {time.monotonic()}")
+
 from config import config
 from display import MagtagDisplay
 from homeassistant.device import HomeAssistantDevice
 from homeassistant.number import HomeAssistantNumber
 from homeassistant.sensor import HomeAssistantSensor
 from homeassistant.device_class import DeviceClass
+from adafruit_magtag.peripherals import Peripherals
 from memory import BackupRAM
 from micropython import const
 from network import MagtagNetwork
 from secrets import secrets
 from supervisor import runtime, reload, RunReason
 
-print(f"Time: {time.time()}")
+print(f"Time from imports: {time.monotonic()}")
+
 # NOTE: SCD30 takes a few seconds to produce data after sample_rate period
 # NOTE: (Re-)Initializing SCD30/I2C bus before its measurement interval
 # has finished means the interval will reset, effectively doubling the interval
@@ -113,6 +119,17 @@ def get_fmt_date(epoch_time: int = None) -> str:
     else:
         now = time.localtime()
     return DATA_FMT_STR % (now[1], now[2], now[0])
+
+
+def deep_sleep(sleep_time: float) -> None:
+    time_alarm = alarm.time.TimeAlarm(monotonic_time=time.monotonic() + sleep_time)
+    alarm.exit_and_deep_sleep_until_alarms(time_alarm)
+
+
+def light_sleep(sleep_time: float) -> None:
+    time_alarm = alarm.time.TimeAlarm(monotonic_time=time.monotonic() + sleep_time)
+    alarm.light_sleep_until_alarms(time_alarm)
+    gc.collect()
 
 
 def mqtt_connected(client: MQTT.MQTT, user_data, flags, rc) -> None:
@@ -240,7 +257,7 @@ def time_sync(time_sync_time: int, network: MagtagNetwork):
 
 def update_display(display_time: int, display, sensor_data: list):
     if ((time.time() - display_time) >= config["display_refresh_rate_sec"]):
-        print(f"Time: {time.time()}")
+        print(f"Time mono: {time.monotonic()}")
         print("Updating display...")
         now = get_fmt_time()
         uploaded_time = get_fmt_time(backup_ram.get_element(BACKUP_NAME_UPLOAD_TIME))
@@ -271,11 +288,11 @@ def upload_data(upload_time: int, co2_device: HomeAssistantDevice, network: Magt
             reload()
 
         # Service MQTT
-        print(f"Time: {time.time()}")
+        print(f"Time mono: {time.monotonic()}")
         network.loop(recover=recover)
 
         # Publish data to MQTT
-        print(f"Time: {time.time()}")
+        print(f"Time mono: {time.monotonic()}")
         try:
             print("Publishing MQTT data...")
             co2_device.publish_numbers()
@@ -289,6 +306,7 @@ def upload_data(upload_time: int, co2_device: HomeAssistantDevice, network: Magt
 
 
 def main() -> None:
+    print(f"Time main: {time.monotonic()}")
     if runtime.run_reason == RunReason.SUPERVISOR_RELOAD:
         first_boot = False
     else:
@@ -298,7 +316,6 @@ def main() -> None:
     print(f"Run reason: {runtime.run_reason}")
     print(f"First boot: {first_boot}")
     print("\nInitializing...")
-    print(f"Time: {time.time()}")
 
     if first_boot:
         # Initialize persistent data
@@ -325,7 +342,6 @@ def main() -> None:
 
     # Initialize critical components first
     device_state = backup_ram.get_element(BACKUP_NAME_STATE)
-    magtag = MagTag()
     i2c = busio.I2C(board.SCL, board.SDA, frequency=100000)
     scd41 = adafruit_scd4x.SCD4X(i2c)
     if first_boot:
@@ -340,16 +356,17 @@ def main() -> None:
         print("Sending single shot...")
         scd41._send_command(SCD41_CMD_SINGLE_SHOT)
 
-        print(f"Time: {time.time()}\n")
+        print(f"Time mono: {time.monotonic()}\n")
         print("Sleeping...\n")
         update_state(STATE_DEEP_SLEEP)
-        magtag.exit_and_deep_sleep(SAMPLING_SEC)
+        deep_sleep(SAMPLING_SEC)
 
     # Init Magtag device and display
     red_led = digitalio.DigitalInOut(board.D13)
     red_led.switch_to_output(value=False)
-    magtag.peripherals.neopixel_disable = True
-    magtag.peripherals.speaker_disable = True
+    magtag_periphs = Peripherals()
+    magtag_periphs.neopixel_disable = True
+    magtag_periphs.speaker_disable = True
     display = MagtagDisplay()
 
     # Init network devices
@@ -373,7 +390,7 @@ def main() -> None:
     mqtt_client.on_disconnect = mqtt_disconnected
     mqtt_client.on_message = mqtt_message
     ntp = adafruit_ntp.NTP(socket_pool, tz_offset=TZ_OFFSET_PACIFIC)
-    network = MagtagNetwork(magtag, mqtt_client, ntp)
+    network = MagtagNetwork(mqtt_client, ntp)
 
     # Sensor read functions
     def read_co2():
@@ -382,7 +399,7 @@ def main() -> None:
         return scd41.CO2
 
     def read_batt():
-        volts = magtag.peripherals.battery
+        volts = magtag_periphs.battery
         return volts if volts < MAGTAG_BATT_DXN_VOLTAGE else 0
 
     # Create home assistant sensors
@@ -446,13 +463,13 @@ def main() -> None:
         backup_ram.set_element(BACKUP_NAME_FIRST_TIME_SYNC, False)
 
     backup_ram.print_elements()
-    print(f"Time: {time.time()}")
+    print(f"Time mono: {time.monotonic()}")
     print("")
 
     # Main Loop
     while True:
         print("Processing...")
-        print(f"Time: {time.time()}")
+        print(f"Time mono: {time.monotonic()}")
 
         # Load backup RAM data
         display_time = backup_ram.get_element(BACKUP_NAME_DISPLAY_TIME)
@@ -467,7 +484,7 @@ def main() -> None:
             print("Reading sensors...")
             sensor_data = co2_device.read_sensors(cache=True)
             print(sensor_data)
-            print(f"Time: {time.time()}")
+            print(f"Time mono: {time.monotonic()}")
 
             time_sync(time_sync_time, network)
 
@@ -484,7 +501,7 @@ def main() -> None:
 
             update_display(display_time, display, sensor_data)
 
-            print(f"Time: {time.time()}\n")
+            print(f"Time mono: {time.monotonic()}\n")
             if not runtime.serial_connected or config["force_deep_sleep"]:
                 # State transition, reboot into deep sleep state
                 update_state(STATE_DEEP_SLEEP_SAMPLING)
@@ -493,13 +510,13 @@ def main() -> None:
                 reload()
             else:
                 print("Sleeping...\n")
-                magtag.enter_light_sleep(config["light_sleep_sec"])
+                light_sleep(config["light_sleep_sec"])
 
         elif device_state == STATE_DEEP_SLEEP:
             print("Reading sensors...")
             sensor_data = co2_device.read_sensors(cache=True)
             print(sensor_data)
-            print(f"Time: {time.time()}")
+            print(f"Time mono: {time.monotonic()}")
 
             time_sync(time_sync_time, network)
 
@@ -516,7 +533,7 @@ def main() -> None:
             if network.is_connected():
                 network.disconnect()
 
-            print(f"Time: {time.time()}\n")
+            print(f"Time mono: {time.monotonic()}\n")
             if runtime.serial_connected and not config["force_deep_sleep"]:
                 # State transition, reboot into light sleep state
                 update_state(STATE_LIGHT_SLEEP)
@@ -524,7 +541,7 @@ def main() -> None:
             else:
                 print("Sleeping...\n")
                 update_state(STATE_DEEP_SLEEP_SAMPLING)
-                magtag.exit_and_deep_sleep(config["deep_sleep_sec"])
+                deep_sleep(config["deep_sleep_sec"])
         else:
             raise Exception(f"Unknown state: {device_state}")
 

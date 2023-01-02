@@ -1,11 +1,12 @@
 import adafruit_minimqtt.adafruit_minimqtt as MQTT
 import adafruit_ntp
 import ipaddress
+import gc
 import rtc
 import time
 import wifi
 
-from adafruit_magtag.magtag import MagTag
+from secrets import secrets
 from supervisor import reload
 
 
@@ -14,10 +15,10 @@ class MagtagNetwork():
     CONNECT_ATTEMPTS_WIFI = 10
     GOOGLE_IP_ADDRESS = ipaddress.ip_address("8.8.4.4")
 
-    def __init__(self, magtag: MagTag, mqtt_client: MQTT.MQTT, ntp: adafruit_ntp.NTP = None) -> None:
-        self.magtag = magtag
+    def __init__(self, mqtt_client: MQTT.MQTT, ntp: adafruit_ntp.NTP = None) -> None:
         self.mqtt_client = mqtt_client
         self.ntp = ntp
+        self.wifi_connected = False
 
     def _mqtt_connect(self, force: bool = False) -> None:
         print("Connecting MQTT client...")
@@ -50,12 +51,29 @@ class MagtagNetwork():
     def _wifi_connect(self) -> None:
         print("Connecting wifi...")
 
-        if not self.magtag.network.is_connected:
-            self.magtag.network.enabled = True
+        if not self.wifi_connected:
+            self._wifi_enable()
+            ssid = secrets["ssid"]
+            password = secrets["password"]
+            attempt = 1
 
-            try:
-                self.magtag.network.connect(max_attempts=self.CONNECT_ATTEMPTS_WIFI)
-            except (TypeError, OSError) as e:
+            while not self.wifi_connected:
+                print(f"Connecting to AP: {ssid}")
+
+                try:
+                    wifi.radio.connect(ssid, password)
+                    self.wifi_connected = True
+                except (RuntimeError, ConnectionError) as error:
+                    if attempt >= self.CONNECT_ATTEMPTS_WIFI:
+                        break
+                    else:
+                        print(f"Could not connect to internet: {error}")
+                        print("Retrying in 3 seconds...")
+                        attempt += 1
+                        time.sleep(3)
+                gc.collect()
+
+            if self.wifi_connected is False:
                 print(f"Failed to connect to Wifi! {e}")
                 print("Rebooting...")
                 reload()
@@ -63,6 +81,13 @@ class MagtagNetwork():
                 print(f"Wifi is connected: {wifi.radio.ipv4_address}")
         else:
             print("Wifi is already connected")
+
+    def _wifi_enable(self):
+        wifi.radio.enabled = True
+
+    def _wifi_disable(self):
+        wifi.radio.enabled = False
+        self.wifi_connected = False
 
     def connect(self) -> None:
         print("Connecting network devices...")
@@ -76,8 +101,8 @@ class MagtagNetwork():
         self._mqtt_disconnect()
         print(f"MQTT is connected: {self.mqtt_client.is_connected()}")
 
-        self.magtag.network.enabled = False
-        print(f"Wifi is connected: {self.magtag.network.is_connected}")
+        self._wifi_disable()
+        print(f"Wifi is connected: {self.wifi_connected}")
 
     def is_connected(self) -> bool:
         return self.mqtt_client.is_connected()
@@ -93,14 +118,14 @@ class MagtagNetwork():
     def recover(self) -> None:
         print("Recovering network devices...")
 
-        if self.magtag.network.is_connected and not wifi.radio.ping(self.GOOGLE_IP_ADDRESS):
+        if self.wifi_connected and not wifi.radio.ping(self.GOOGLE_IP_ADDRESS):
             # Reset wifi connection if ping is NOT successful
-            self.magtag.network.enabled = False
+            self._wifi_disable()
             time.sleep(1)
-            self.magtag.network.enabled = True
+            self._wifi_enable()
 
             self._wifi_connect()
-        elif not self.magtag.network.is_connected:
+        elif not self.wifi_connected:
             # Reconnect wifi
             self._wifi_connect()
 
