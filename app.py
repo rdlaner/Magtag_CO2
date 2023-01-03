@@ -24,10 +24,10 @@ from homeassistant.device import HomeAssistantDevice
 from homeassistant.number import HomeAssistantNumber
 from homeassistant.sensor import HomeAssistantSensor
 from homeassistant.device_class import DeviceClass
-from adafruit_magtag.peripherals import Peripherals
 from memory import BackupRAM
 from micropython import const
 from network import MagtagNetwork
+from peripherals import Peripherals
 from secrets import secrets
 from supervisor import runtime, reload, RunReason
 
