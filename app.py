@@ -5,7 +5,6 @@ import adafruit_minimqtt.adafruit_minimqtt as MQTT
 import adafruit_ntp
 import adafruit_scd4x
 import alarm
-import binascii
 import digitalio
 import board
 import busio
@@ -371,7 +370,7 @@ def main() -> None:
     display = MagtagDisplay()
 
     # Init network devices
-    client_id = f"{DEVICE_NAME}-{binascii.hexlify(microcontroller.cpu.uid).decode()}"
+    client_id = client_id = 'MAGT' + str(int.from_bytes(microcontroller.cpu.uid, 'little') >> 29)
     socket_pool = socketpool.SocketPool(wifi.radio)
     if device_state == STATE_LIGHT_SLEEP:
         keep_alive_sec = config["light_sleep_sec"] + MQTT_KEEP_ALIVE_MARGIN_SEC
