@@ -64,7 +64,6 @@ print(f"Time from imports: {time.monotonic()}")
 # TODO: Add config for publishing logs to mqtt
 # TODO: Fix circuitpython scd30 init which forces a 2 second measurement interval
 # TODO: Add base class for HA types (eg for sensor, number, etc.)
-# TODO: Add last read time to display
 
 # Constants
 MQTT_CONNECT_ATTEMPTS = const(10)
@@ -73,7 +72,8 @@ MQTT_KEEP_ALIVE_MARGIN_SEC = const(20)
 FORCE_CAL_DISABLED = const(-1)
 TZ_OFFSET_PACIFIC = const(-8)
 SCD41_CMD_SINGLE_SHOT = const(0x219D)
-SAMPLING_SEC = const(4)
+SINGLE_SHOT_SLEEP_SEC = const(5)
+SENSOR_READ_TIMEOUT_SEC = const(5)
 STATE_LIGHT_SLEEP = const(0)
 STATE_DEEP_SLEEP_SAMPLING = const(1)
 STATE_DEEP_SLEEP = const(2)
@@ -359,7 +359,7 @@ def main() -> None:
         print(f"Time mono: {time.monotonic()}\n")
         print("Sleeping...\n")
         update_state(STATE_DEEP_SLEEP)
-        deep_sleep(SAMPLING_SEC)
+        deep_sleep(SINGLE_SHOT_SLEEP_SEC)
 
     # Init Magtag device and display
     red_led = digitalio.DigitalInOut(board.D13)
@@ -394,7 +394,8 @@ def main() -> None:
 
     # Sensor read functions
     def read_co2():
-        while not scd41.data_ready:
+        start = time.monotonic()
+        while not scd41.data_ready and time.monotonic() - start < SENSOR_READ_TIMEOUT_SEC:
             time.sleep(0.1)
         return scd41.CO2
 
