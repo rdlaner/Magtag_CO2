@@ -5,6 +5,7 @@ import adafruit_minimqtt.adafruit_minimqtt as MQTT
 import adafruit_ntp
 import adafruit_scd4x
 import alarm
+import binascii
 import digitalio
 import board
 import busio
@@ -370,12 +371,14 @@ def main() -> None:
     display = MagtagDisplay()
 
     # Init network devices
+    client_id = f"{DEVICE_NAME}-{binascii.hexlify(microcontroller.cpu.uid).decode()}"
     socket_pool = socketpool.SocketPool(wifi.radio)
     if device_state == STATE_LIGHT_SLEEP:
         keep_alive_sec = config["light_sleep_sec"] + MQTT_KEEP_ALIVE_MARGIN_SEC
     else:
         keep_alive_sec = config["deep_sleep_sec"] + MQTT_KEEP_ALIVE_MARGIN_SEC
     mqtt_client = MQTT.MQTT(
+        client_id=client_id,
         broker=secrets["mqtt_broker"],
         port=secrets["mqtt_port"],
         username=secrets["mqtt_username"],
@@ -390,7 +393,7 @@ def main() -> None:
     mqtt_client.on_disconnect = mqtt_disconnected
     mqtt_client.on_message = mqtt_message
     ntp = adafruit_ntp.NTP(socket_pool, tz_offset=TZ_OFFSET_PACIFIC)
-    network = MagtagNetwork(mqtt_client, ntp)
+    network = MagtagNetwork(mqtt_client, ntp=ntp, hostname=client_id)
 
     # Sensor read functions
     def read_co2():

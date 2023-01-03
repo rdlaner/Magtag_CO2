@@ -12,13 +12,16 @@ from supervisor import reload
 
 class MagtagNetwork():
     # Constants
-    CONNECT_ATTEMPTS_WIFI = 10
+    CONNECT_ATTEMPTS_WIFI = 5
     GOOGLE_IP_ADDRESS = ipaddress.ip_address("8.8.4.4")
 
-    def __init__(self, mqtt_client: MQTT.MQTT, ntp: adafruit_ntp.NTP = None) -> None:
+    def __init__(self, mqtt_client: MQTT.MQTT, ntp: adafruit_ntp.NTP = None, hostname: str = None) -> None:
         self.mqtt_client = mqtt_client
         self.ntp = ntp
         self.wifi_connected = False
+
+        wifi.radio.hostname = hostname
+        self._wifi_disable()
 
     def _mqtt_connect(self, force: bool = False) -> None:
         print("Connecting MQTT client...")
@@ -62,19 +65,23 @@ class MagtagNetwork():
 
                 try:
                     wifi.radio.connect(ssid, password)
-                    self.wifi_connected = True
                 except (RuntimeError, ConnectionError) as error:
+                    print(f"Could not connect to internet: {error}")
+
+                if not wifi.radio.ipv4_address:
+                    self.wifi_connected = False
                     if attempt >= self.CONNECT_ATTEMPTS_WIFI:
                         break
-                    else:
-                        print(f"Could not connect to internet: {error}")
-                        print("Retrying in 3 seconds...")
-                        attempt += 1
-                        time.sleep(3)
+                    print("Retrying in 3 seconds...")
+                    attempt += 1
+                    time.sleep(3)
+                else:
+                    self.wifi_connected = True
+
                 gc.collect()
 
-            if self.wifi_connected is False:
-                print(f"Failed to connect to Wifi! {e}")
+            if not self.wifi_connected:
+                print("Failed to connect to Wifi!")
                 print("Rebooting...")
                 reload()
             else:
