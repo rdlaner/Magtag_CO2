@@ -302,8 +302,8 @@ def upload_data(upload_time: int, co2_device: HomeAssistantDevice, network: Magt
             print(f"MQTT Publish failure\n{e}")
             if recover:
                 network.recover()
-
-        backup_ram.set_element(BACKUP_NAME_UPLOAD_TIME, time.time())
+        else:
+            backup_ram.set_element(BACKUP_NAME_UPLOAD_TIME, time.time())
 
 
 def main() -> None:
