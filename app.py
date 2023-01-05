@@ -64,6 +64,7 @@ print(f"Time from imports: {time.monotonic()}")
 # TODO: Add config for publishing logs to mqtt
 # TODO: Fix circuitpython scd30 init which forces a 2 second measurement interval
 # TODO: Add base class for HA types (eg for sensor, number, etc.)
+# TODO: Selectively import imports based on state instead all imports on every boot.
 
 # Constants
 MQTT_CONNECT_ATTEMPTS = const(10)
@@ -460,9 +461,11 @@ def main() -> None:
         network.ntp_time_sync()
         now = time.time()
 
-        backup_ram.add_element(BACKUP_NAME_DISPLAY_TIME, "I", now)
+        backup_ram.add_element(BACKUP_NAME_DISPLAY_TIME,
+                               "I", now - config["display_refresh_rate_sec"])
+        backup_ram.add_element(BACKUP_NAME_UPLOAD_TIME,
+                               "I", now - config["upload_rate_sec"])
         backup_ram.add_element(BACKUP_NAME_TIME_SYNC_TIME, "I", now)
-        backup_ram.add_element(BACKUP_NAME_UPLOAD_TIME, "I", now)
         backup_ram.set_element(BACKUP_NAME_FIRST_TIME_SYNC, False)
 
     backup_ram.print_elements()
