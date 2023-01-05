@@ -63,6 +63,15 @@ class MagtagNetwork():
             while not self.wifi_connected:
                 print(f"Connecting to AP: {ssid}")
 
+                # Debug
+                networks = []
+                for network in wifi.radio.start_scanning_networks():
+                    networks.append(network)
+                wifi.radio.stop_scanning_networks()
+                networks = sorted(networks, key=lambda net: net.rssi, reverse=True)
+                for network in networks:
+                    print("ssid:", network.ssid, "rssi:", network.rssi)
+
                 try:
                     wifi.radio.connect(ssid, password)
                 except (RuntimeError, ConnectionError) as error:
