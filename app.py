@@ -95,11 +95,13 @@ BACKUP_NAME_TIME_SYNC_TIME = "time sync"
 BACKUP_NAME_UPLOAD_TIME = "upload"
 BACKUP_NAME_STATE = "state"
 BACKUP_NAME_FIRST_TIME_SYNC = "first sync"
+BACKUP_NAME_WIFI = "wifi"
 TIME_FMT_STR = "%d:%02d:%02d"
 DATA_FMT_STR = "%d/%d/%d"
 
 # Globals
 backup_ram = BackupRAM()
+pin_alarm = alarm.pin.PinAlarm(pin=board.BUTTON_A, value=False, pull=True)
 
 
 def c_to_f(temp_cels: float) -> float:
@@ -124,13 +126,15 @@ def get_fmt_date(epoch_time: int = None) -> str:
 
 def deep_sleep(sleep_time: float) -> None:
     time_alarm = alarm.time.TimeAlarm(monotonic_time=time.monotonic() + sleep_time)
-    alarm.exit_and_deep_sleep_until_alarms(time_alarm)
+    alarm.exit_and_deep_sleep_until_alarms(time_alarm, pin_alarm)
 
 
-def light_sleep(sleep_time: float) -> None:
+def light_sleep(sleep_time: float) -> Alarm:
     time_alarm = alarm.time.TimeAlarm(monotonic_time=time.monotonic() + sleep_time)
-    alarm.light_sleep_until_alarms(time_alarm)
+    triggered_alarm = alarm.light_sleep_until_alarms(time_alarm, pin_alarm)
     gc.collect()
+
+    return triggered_alarm
 
 
 def mqtt_connected(client: MQTT.MQTT, user_data, flags, rc) -> None:
@@ -306,6 +310,14 @@ def upload_data(upload_time: int, co2_device: HomeAssistantDevice, network: Magt
             backup_ram.set_element(BACKUP_NAME_UPLOAD_TIME, time.time())
 
 
+def toggle_wifi_enable(display: MagtagDisplay):
+    wifi_enabled = backup_ram.get_element(BACKUP_NAME_WIFI)
+    backup_ram.set_element(BACKUP_NAME_WIFI, not wifi_enabled)
+    backup_ram.set_element(BACKUP_NAME_DISPLAY_TIME, time.time() - config["display_refresh_rate_sec"])
+    display.show_wifi(not wifi_enabled)
+    display.refresh(True)
+
+
 def main() -> None:
     print(f"Time main: {time.monotonic()}")
     if runtime.run_reason == RunReason.SUPERVISOR_RELOAD:
@@ -315,9 +327,10 @@ def main() -> None:
 
     print(f"Reset reason: {microcontroller.cpu.reset_reason}")
     print(f"Run reason: {runtime.run_reason}")
+    print(f"Wake alarm: {alarm.wake_alarm}")
     print(f"First boot: {first_boot}")
-    print("\nInitializing...")
 
+    print("\nInitializing...")
     if first_boot:
         # Initialize persistent data
         backup_ram.reset()
@@ -331,6 +344,14 @@ def main() -> None:
         backup_ram.add_element(
             BACKUP_NAME_FIRST_TIME_SYNC, "B", True
         )
+        backup_ram.add_element(
+            BACKUP_NAME_WIFI, "B", config["enable_wifi"]
+        )
+
+        now = time.time()
+        backup_ram.add_element(BACKUP_NAME_DISPLAY_TIME, "I", now)
+        backup_ram.add_element(BACKUP_NAME_UPLOAD_TIME, "I", now)
+        backup_ram.add_element(BACKUP_NAME_TIME_SYNC_TIME, "I", now)
 
         if runtime.serial_connected and not config["force_deep_sleep"]:
             initial_state = STATE_LIGHT_SLEEP
@@ -341,14 +362,31 @@ def main() -> None:
             BACKUP_NAME_STATE, "I", initial_state
         )
 
-    # Initialize critical components first
     device_state = backup_ram.get_element(BACKUP_NAME_STATE)
+    wifi_enabled = backup_ram.get_element(BACKUP_NAME_WIFI)
+    first_sync = backup_ram.get_element(BACKUP_NAME_FIRST_TIME_SYNC)
+
+    # Init Magtag device and display
+    red_led = digitalio.DigitalInOut(board.D13)
+    red_led.switch_to_output(value=False)
+    magtag_periphs = Peripherals()
+    magtag_periphs.neopixel_disable = True
+    magtag_periphs.speaker_disable = True
+    display = MagtagDisplay()
+    display.show_wifi(wifi_enabled)
+
+    # Initialize SCD41
     i2c = busio.I2C(board.SCL, board.SDA, frequency=100000)
     scd41 = adafruit_scd4x.SCD4X(i2c)
     if first_boot:
         scd41_init(scd41)
     if device_state == STATE_LIGHT_SLEEP:
         scd41.start_periodic_measurement()  # High performance mode
+
+    # Toggle Wifi button pressed?
+    if isinstance(alarm.wake_alarm, alarm.pin.PinAlarm):
+        print("Woke from button press!")
+        toggle_wifi_enable(display)
 
     # If in STATE_DEEP_SLEEP_SAMPLING, we don't need to take up time with the
     # rest of initialization. So, handle STATE_DEEP_SLEEP_SAMPLING here.
@@ -362,38 +400,33 @@ def main() -> None:
         update_state(STATE_DEEP_SLEEP)
         deep_sleep(SINGLE_SHOT_SLEEP_SEC)
 
-    # Init Magtag device and display
-    red_led = digitalio.DigitalInOut(board.D13)
-    red_led.switch_to_output(value=False)
-    magtag_periphs = Peripherals()
-    magtag_periphs.neopixel_disable = True
-    magtag_periphs.speaker_disable = True
-    display = MagtagDisplay()
-
-    # Init network devices
-    client_id = client_id = 'MAGT' + str(int.from_bytes(microcontroller.cpu.uid, 'little') >> 29)
-    socket_pool = socketpool.SocketPool(wifi.radio)
-    if device_state == STATE_LIGHT_SLEEP:
-        keep_alive_sec = config["light_sleep_sec"] + MQTT_KEEP_ALIVE_MARGIN_SEC
+    # Init network devices if wifi is enabled
+    if wifi_enabled or first_sync or device_state == STATE_LIGHT_SLEEP:
+        client_id = client_id = 'MAGT' + str(int.from_bytes(microcontroller.cpu.uid, 'little') >> 29)
+        socket_pool = socketpool.SocketPool(wifi.radio)
+        if device_state == STATE_LIGHT_SLEEP:
+            keep_alive_sec = config["light_sleep_sec"] + MQTT_KEEP_ALIVE_MARGIN_SEC
+        else:
+            keep_alive_sec = config["deep_sleep_sec"] + MQTT_KEEP_ALIVE_MARGIN_SEC
+        mqtt_client = MQTT.MQTT(
+            client_id=client_id,
+            broker=secrets["mqtt_broker"],
+            port=secrets["mqtt_port"],
+            username=secrets["mqtt_username"],
+            password=secrets["mqtt_password"],
+            socket_pool=socket_pool,
+            ssl_context=ssl.create_default_context(),
+            connect_retries=MQTT_CONNECT_ATTEMPTS,
+            recv_timeout=MQTT_RX_TIMEOUT_SEC,
+            keep_alive=keep_alive_sec
+        )
+        mqtt_client.on_connect = mqtt_connected
+        mqtt_client.on_disconnect = mqtt_disconnected
+        mqtt_client.on_message = mqtt_message
+        ntp = adafruit_ntp.NTP(socket_pool, tz_offset=TZ_OFFSET_PACIFIC)
+        network = MagtagNetwork(mqtt_client, ntp=ntp, hostname=client_id)
     else:
-        keep_alive_sec = config["deep_sleep_sec"] + MQTT_KEEP_ALIVE_MARGIN_SEC
-    mqtt_client = MQTT.MQTT(
-        client_id=client_id,
-        broker=secrets["mqtt_broker"],
-        port=secrets["mqtt_port"],
-        username=secrets["mqtt_username"],
-        password=secrets["mqtt_password"],
-        socket_pool=socket_pool,
-        ssl_context=ssl.create_default_context(),
-        connect_retries=MQTT_CONNECT_ATTEMPTS,
-        recv_timeout=MQTT_RX_TIMEOUT_SEC,
-        keep_alive=keep_alive_sec
-    )
-    mqtt_client.on_connect = mqtt_connected
-    mqtt_client.on_disconnect = mqtt_disconnected
-    mqtt_client.on_message = mqtt_message
-    ntp = adafruit_ntp.NTP(socket_pool, tz_offset=TZ_OFFSET_PACIFIC)
-    network = MagtagNetwork(mqtt_client, ntp=ntp, hostname=client_id)
+        mqtt_client = None
 
     # Sensor read functions
     def read_co2():
@@ -455,18 +488,19 @@ def main() -> None:
     config["cmd_topic"] = f"{co2_device.number_topic}/cmd"
 
     # Time sync before first time through main loop
-    first_sync = backup_ram.get_element(BACKUP_NAME_FIRST_TIME_SYNC)
     if first_sync:
         network.connect()
         network.ntp_time_sync()
         now = time.time()
 
-        backup_ram.add_element(BACKUP_NAME_DISPLAY_TIME,
-                               "I", now - config["display_refresh_rate_sec"])
-        backup_ram.add_element(BACKUP_NAME_UPLOAD_TIME,
-                               "I", now - config["upload_rate_sec"])
-        backup_ram.add_element(BACKUP_NAME_TIME_SYNC_TIME, "I", now)
+        backup_ram.set_element(BACKUP_NAME_DISPLAY_TIME, now - config["display_refresh_rate_sec"])
+        backup_ram.set_element(BACKUP_NAME_UPLOAD_TIME, now - config["upload_rate_sec"])
+        backup_ram.set_element(BACKUP_NAME_TIME_SYNC_TIME, now)
         backup_ram.set_element(BACKUP_NAME_FIRST_TIME_SYNC, False)
+
+        if not wifi_enabled:
+            # Disconnect wifi after time sync if disabled
+            network.disconnect()
 
     backup_ram.print_elements()
     print(f"Time mono: {time.monotonic()}")
@@ -484,6 +518,7 @@ def main() -> None:
         current_pressure = backup_ram.get_element(BACKUP_NAME_PRESSURE)
         current_temp_offset = backup_ram.get_element(BACKUP_NAME_TEMP_OFFSET)
         current_cal_val = backup_ram.get_element(BACKUP_NAME_CAL)
+        wifi_enabled = backup_ram.get_element(BACKUP_NAME_WIFI)
 
         # State Machine
         if device_state == STATE_LIGHT_SLEEP:
@@ -492,18 +527,18 @@ def main() -> None:
             print(sensor_data)
             print(f"Time mono: {time.monotonic()}")
 
-            time_sync(time_sync_time, network)
+            if wifi_enabled:
+                config["upload_rate_sec"] = config["light_sleep_sec"]
+                time_sync(time_sync_time, network)
+                upload_data(upload_time, co2_device, network, recover=True)
 
-            config["upload_rate_sec"] = config["light_sleep_sec"]
-            upload_data(upload_time, co2_device, network, recover=True)
+                if process_calibration(scd41, current_cal_val):
+                    scd41.start_periodic_measurement()
 
-            if process_calibration(scd41, current_cal_val):
-                scd41.start_periodic_measurement()
+                if process_temp_offset(scd41, current_temp_offset):
+                    scd41.start_periodic_measurement()
 
-            if process_temp_offset(scd41, current_temp_offset):
-                scd41.start_periodic_measurement()
-
-            process_pressure(scd41, current_pressure)
+                process_pressure(scd41, current_pressure)
 
             update_display(display_time, display, sensor_data)
 
@@ -511,12 +546,13 @@ def main() -> None:
             if not runtime.serial_connected or config["force_deep_sleep"]:
                 # State transition, reboot into deep sleep state
                 update_state(STATE_DEEP_SLEEP_SAMPLING)
-                print("Updated sleep should be deep sleep")
-                backup_ram.print_elements()
                 reload()
             else:
                 print("Sleeping...\n")
-                light_sleep(config["light_sleep_sec"])
+                triggered_alarm = light_sleep(config["light_sleep_sec"])
+                if triggered_alarm is pin_alarm:
+                    print("Woke from button press!")
+                    toggle_wifi_enable(display)
 
         elif device_state == STATE_DEEP_SLEEP:
             print("Reading sensors...")
@@ -524,20 +560,17 @@ def main() -> None:
             print(sensor_data)
             print(f"Time mono: {time.monotonic()}")
 
-            time_sync(time_sync_time, network)
+            if wifi_enabled:
+                time_sync(time_sync_time, network)
+                upload_data(upload_time, co2_device, network)
+                process_calibration(scd41, current_cal_val)
+                process_temp_offset(scd41, current_temp_offset)
+                process_pressure(scd41, current_pressure)
 
-            upload_data(upload_time, co2_device, network)
-
-            process_calibration(scd41, current_cal_val)
-
-            process_temp_offset(scd41, current_temp_offset)
-
-            process_pressure(scd41, current_pressure)
+                if network.is_connected():
+                    network.disconnect()
 
             update_display(display_time, display, sensor_data)
-
-            if network.is_connected():
-                network.disconnect()
 
             print(f"Time mono: {time.monotonic()}\n")
             if runtime.serial_connected and not config["force_deep_sleep"]:

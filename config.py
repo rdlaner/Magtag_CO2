@@ -7,6 +7,7 @@ config = {
     "ambient_pressure": 1000,
     "temp_offset_c": 0.5,
     "force_deep_sleep": False,
+    "enable_wifi": False,
     "pressure_topic": "homeassistant/aranet/pressure",
     "cmd_topic": "homeassistant/number/generic-device/cmd"
 }

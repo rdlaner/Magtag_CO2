@@ -70,12 +70,12 @@ class Peripherals:
         if hasattr(board, "BOOT0"):
             button_pins.append(board.BOOT0)
 
-        self.buttons = []
-        for pin in button_pins:
-            switch = DigitalInOut(pin)
-            switch.direction = Direction.INPUT
-            switch.pull = Pull.UP
-            self.buttons.append(switch)
+        # self.buttons = []
+        # for pin in button_pins:
+        #     switch = DigitalInOut(pin)
+        #     switch.direction = Direction.INPUT
+        #     switch.pull = Pull.UP
+        #     self.buttons.append(switch)
 
     # def play_tone(self, frequency: float, duration: float) -> None:
     #     """Automatically Enable/Disable the speaker and play
